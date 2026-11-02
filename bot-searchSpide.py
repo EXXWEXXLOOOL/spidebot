@@ -12,7 +12,7 @@ import re
 import threading
 import json
 import collections
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, jsonify
 
 # ==============================
 # LOGGING & MEMORY BUFFER
@@ -43,7 +43,8 @@ CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 DEFAULT_CONFIG = {
     "SPIDE_COOKIE": os.getenv("SPIDE_COOKIE", ""),
     "tg_channels": ["dsdedmak0193"],
-    "last_ids": {"dsdedmak0193": 0}
+    "last_ids": {"dsdedmak0193": 0},
+    "permissions": {}
 }
 
 def load_config():
@@ -73,7 +74,7 @@ app_config = load_config()
 # ==============================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True # Обязательно для приветствий!
+intents.members = True # Обязательно для приветствий и ролей
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -84,15 +85,36 @@ SPIDE_TOP_LISTENERS = "https://web.spide.ru/api/v1/tops/listeners?tz=Europe/Mosc
 
 ORANGE = 0xFF8C00
 
-# ID КАНАЛОВ
+# 🚨 ID КАНАЛОВ
 TOP_CHANNEL_ID = 1566895795654107217
 UPDATE_CHANNEL_ID = 1566767775001616506
-WELCOME_CHANNEL_ID = 1566767398588125194 # ЗАМЕНИ НА ID КАНАЛА #👋・приветствие
+WELCOME_CHANNEL_ID = 1566767398588125194 # 🚨 ТВОЙ НОВЫЙ ID ДЛЯ ПРИВЕТСТВИЙ
+
+# 🚨 ГЛОБАЛЬНАЯ ПРОВЕРКА ПРАВ
+@bot.check
+async def global_permission_check(ctx):
+    if ctx.author.guild_permissions.administrator or await bot.is_owner(ctx.author):
+        return True
+
+    cmd_name = ctx.command.name
+    guild_id = str(ctx.guild.id)
+
+    perms = app_config.get("permissions", {}).get(guild_id, {})
+    allowed_roles = perms.get(cmd_name)
+
+    if not allowed_roles:
+        return True
+
+    user_role_ids = [str(role.id) for role in ctx.author.roles]
+    if any(role_id in allowed_roles for role_id in user_role_ids):
+        return True
+
+    await ctx.send(f"❌ У вас нет прав на использование команды `!{cmd_name}`.")
+    return False
 
 # ==============================
 # WELCOME MESSAGE & ROLES
 # ==============================
-
 class RoleSelectView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -100,7 +122,7 @@ class RoleSelectView(discord.ui.View):
     async def handle_role(self, interaction: discord.Interaction, role_name: str):
         role = discord.utils.get(interaction.guild.roles, name=role_name)
         if not role:
-            await interaction.response.send_message(f"❌ Роль **{role_name}** не найдена. Админ, создай её!", ephemeral=True)
+            await interaction.response.send_message(f"❌ Роль **{role_name}** не найдена.", ephemeral=True)
             return
 
         if role in interaction.user.roles:
@@ -118,16 +140,26 @@ class RoleSelectView(discord.ui.View):
     async def web_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_role(interaction, "Web")
 
-    # 🚨 ЗАМЕНИЛИ APPLE НА DESKTOP
     @discord.ui.button(label="Desktop", style=discord.ButtonStyle.secondary, emoji="💻", custom_id="role_desktop")
     async def desktop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_role(interaction, "Desktop")
 
 @bot.event
 async def on_member_join(member):
+    # 🚨 1. ВЫДАЕМ РОЛЬ "🕷 Участник"
+    role = discord.utils.get(member.guild.roles, name="🕷 Участник")
+    if role:
+        try:
+            await member.add_roles(role)
+            logging.info(f"Выдана роль '🕷 Участник' новому участнику {member.name}")
+        except discord.Forbidden:
+            logging.error(f"Не удалось выдать роль {member.name}. Проверь иерархию ролей!")
+    else:
+        logging.warning("Роль '🕷 Участник' не найдена на сервере!")
+
+    # 🚨 2. ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
-    if not channel:
-        return
+    if not channel: return
 
     welcome_text = (
         "🕷 **Добро пожаловать в Spide!**\n"
@@ -163,13 +195,50 @@ def index():
     ping = round(bot.latency * 1000) if is_ready else 0
     logs = list(log_buffer)[-20:]
     
+    guilds = [{"id": g.id, "name": g.name} for g in bot.guilds] if is_ready else []
+    restricted_commands = ["search", "top", "links", "checktg", "rules", "setup_roles"]
+
     return render_template(
         'index.html', 
-        guilds=guild_count, latency=ping, status=is_ready,
+        guilds_count=guild_count, latency=ping, status=is_ready,
         channels=app_config.get("tg_channels", []),
         cookie=app_config.get("SPIDE_COOKIE", ""),
-        logs=logs
+        logs=logs,
+        guilds=guilds,
+        commands=restricted_commands,
+        permissions=app_config.get("permissions", {})
     )
+
+@web_app.route('/api/get_roles/<int:guild_id>')
+def get_roles(guild_id):
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return jsonify([])
+    roles = [{"id": str(r.id), "name": r.name} for r in guild.roles if not r.is_default() and not r.managed]
+    return jsonify(roles)
+
+@web_app.route('/update_permissions', methods=['POST'])
+def update_permissions():
+    global app_config
+    guild_id = request.form.get('guild_id')
+    command = request.form.get('command_name')
+    roles = request.form.getlist('roles[]')
+
+    if guild_id and command:
+        if "permissions" not in app_config:
+            app_config["permissions"] = {}
+        if guild_id not in app_config["permissions"]:
+            app_config["permissions"][guild_id] = {}
+
+        if roles:
+            app_config["permissions"][guild_id][command] = roles
+            logging.info(f"Обновлены права для {command} на сервере {guild_id}")
+        else:
+            if command in app_config["permissions"][guild_id]:
+                del app_config["permissions"][guild_id][command]
+                logging.info(f"Сняты ограничения для {command} на сервере {guild_id}")
+        save_config(app_config)
+    return redirect(url_for('index'))
 
 @web_app.route('/add_channel', methods=['POST'])
 def add_channel():
@@ -219,7 +288,7 @@ def trigger_top():
     channel = bot.get_channel(TOP_CHANNEL_ID)
     if bot.loop and channel:
         asyncio.run_coroutine_threadsafe(force_top(channel), bot.loop)
-        logging.info("Запущена ручная отправка топа в канал по умолчанию.")
+        logging.info("Запущена ручная отправка топа.")
     return redirect(url_for('index'))
 
 @web_app.route('/test_cookie')
@@ -368,7 +437,7 @@ async def force_top(target_channel):
     cookie = app_config.get("SPIDE_COOKIE", "")
     
     if not cookie:
-        await target_channel.send("❌ Ошибка: Куки Spide не заданы. Обновите их в веб-панели.")
+        await target_channel.send("❌ Ошибка: Куки Spide не заданы.")
         return False
     if not target_channel: 
         return False
@@ -379,7 +448,7 @@ async def force_top(target_channel):
         response = await asyncio.to_thread(requests.get, SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
         
         if response.status_code != 200:
-            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Скорее всего, протухли куки."
+            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Куки протухли."
             logging.error(err_msg)
             await target_channel.send(err_msg)
             return False
@@ -410,15 +479,8 @@ async def force_top(target_channel):
             name = user.get("displayName") or "Неизвестно"
             score = row.get("score", 0)
             formatted_score = f"{score:,}".replace(",", " ")
-            
-            embed.add_field(
-                name=f"{medals[i]} {i+1} место", 
-                value=f"**{name}**\n`{formatted_score}` мин", 
-                inline=True
-            )
-            
-            if i == 0 and user.get("photoUrl"): 
-                embed.set_thumbnail(url=user["photoUrl"])
+            embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**\n`{formatted_score}` мин", inline=True)
+            if i == 0 and user.get("photoUrl"): embed.set_thumbnail(url=user["photoUrl"])
 
         if len(top_10) > 3:
             other_places = ""
@@ -427,18 +489,12 @@ async def force_top(target_channel):
                 name = user.get("displayName") or "Неизвестно"
                 score = row.get("score", 0)
                 formatted_score = f"{score:,}".replace(",", " ")
-                
                 other_places += f"`{i:02d}.` **{name}** — `{formatted_score}` мин\n"
-            
             embed.add_field(name="Остальные", value=other_places, inline=False)
 
         embed.set_footer(text="SPIDE MUSIC  •  Автоматическое обновление")
         await target_channel.send(embed=embed)
-        
-        if target_channel.id == TOP_CHANNEL_ID:
-            logging.info("Топ-10 успешно отправлен.")
         return True
-
     except Exception as e:
             err_msg = f"❌ Ошибка получения топа: `{e}`"
             logging.error(err_msg)
@@ -448,8 +504,7 @@ async def force_top(target_channel):
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
     channel = bot.get_channel(TOP_CHANNEL_ID)
-    if channel: 
-        await force_top(channel)
+    if channel: await force_top(channel)
 
 async def test_spide_cookie():
     cookie = app_config.get("SPIDE_COOKIE", "")
@@ -462,9 +517,9 @@ async def test_spide_cookie():
         if response.status_code == 200:
             logging.info("✅ Тест куки: УСПЕШНО! Куки рабочие.")
         else:
-            logging.error(f"❌ Тест куки: ОШИБКА {response.status_code}. Куки протухли.")
+            logging.error(f"❌ Тест куки: ОШИБКА {response.status_code}.")
     except Exception as e:
-        logging.error(f"❌ Тест куки: Ошибка соединения - {e}")
+        logging.error(f"❌ Тест куки: Ошибка - {e}")
 
 # ==============================
 # EVENTS & COMMANDS
@@ -480,25 +535,50 @@ async def on_ready():
 async def setup_roles(ctx):
     embed = discord.Embed(
         title="🎭 Выбор платформы",
-        description="Нажмите на кнопку ниже, чтобы получить роль своей платформы. Так мы сможем пинговать вас только тогда, когда выходит обновление для вашего устройства!\n\n🤖 **Android**\n🌐 **Web**\n💻 **Desktop**",
+        description="Нажмите на кнопку ниже, чтобы получить роль своей платформы.\n\n🤖 **Android**\n🌐 **Web**\n💻 **Desktop**",
         color=ORANGE
     )
     await ctx.send(embed=embed, view=RoleSelectView())
     await ctx.message.delete()
+
+@bot.command(name='rules')
+async def rules(ctx):
+    await ctx.message.delete()
+    embed = discord.Embed(
+        title="📜 ПРАВИЛА СООБЩЕСТВА SPIDE",
+        description="Добро пожаловать! Для комфортного общения на сервере просим ознакомиться с основными правилами.",
+        color=ORANGE,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(
+        name="⚖️ Основы общения",
+        value="**01. Уважение**\nЗапрещены травля, угрозы, дискриминация.\n\n**02. Без токсичности**\nКонструктивные споры приветствуются.\n\n**03. Против спама**\nБез флуда и массовых упоминаний.",
+        inline=False
+    )
+    embed.add_field(
+        name="📂 Контент и порядок",
+        value="**04. Реклама**\nТолько с разрешения администрации.\n\n**05. Материалы**\nЗапрещены шок-контент и чужие личные данные.\n\n**06. Тематика**\nСоблюдай тематику каналов.",
+        inline=False
+    )
+    embed.add_field(
+        name="🎙️ Голос и Администрация",
+        value="**07. Голос**\nНе мешай другим.\n\n**08. Обход ограничений**\nЗапрещен.\n\n**09. Жалобы**\nСпокойно и по делу.\n\n**10. Решения админов**\nОбязательны к исполнению.",
+        inline=False
+    )
+    embed.set_footer(text="Spide Music | Пожалуйста, соблюдайте правила", icon_url=ctx.author.display_avatar.url)
+    await ctx.send(embed=embed)
 
 @bot.command(name="search")
 async def search(ctx, *, query: str = None):
     global app_config
     app_config = load_config()
     cookie = app_config.get("SPIDE_COOKIE", "")
-    
     if not query or not query.strip():
         await ctx.send("Напиши название трека.\nПример: `!search Despacito`")
         return
     if not cookie:
-        await ctx.send("Ошибка: Куки Spide не настроены. Зайдите в веб-панель.")
+        await ctx.send("Ошибка: Куки Spide не настроены.")
         return
-        
     msg = await ctx.send("🔎 Ищу треки в Spide...")
     headers = {"accept": "application/json", "referer": "https://web.spide.ru/search", "user-agent": "Mozilla/5.0", "Cookie": cookie}
     try:
@@ -516,11 +596,8 @@ async def search(ctx, *, query: str = None):
 async def top_now(ctx):
     msg = await ctx.send("⏳ Собираю топ-10...")
     success = await force_top(ctx.channel)
-    
-    if success:
-        await msg.delete()
-    else:
-        await msg.edit(content="❌ Не удалось получить топ. Проверьте логи на сайте.")
+    if success: await msg.delete()
+    else: await msg.edit(content="❌ Не удалось получить топ.")
 
 @bot.command(name="checktg")
 async def checktg_now(ctx):
