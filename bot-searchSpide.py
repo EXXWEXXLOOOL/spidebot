@@ -120,11 +120,10 @@ class RoleSelectView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def handle_role(self, interaction: discord.Interaction, role_name: str):
-        # Даем боту 15 секунд на выполнение (защита от таймаута)
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
-            return # Если взаимодействие уже истекло, просто выходим
+            return
 
         role = discord.utils.get(interaction.guild.roles, name=role_name)
         if not role:
@@ -159,7 +158,6 @@ class RoleSelectView(discord.ui.View):
 
 @bot.event
 async def on_member_join(member):
-    # 🚨 1. ВЫДАЕМ РОЛЬ "🕷 Участник"
     role = discord.utils.get(member.guild.roles, name="🕷 Участник")
     if role:
         try:
@@ -170,7 +168,6 @@ async def on_member_join(member):
     else:
         logging.warning("Роль '🕷 Участник' не найдена на сервере!")
 
-    # 🚨 2. ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
     if not channel: return
 
@@ -209,7 +206,8 @@ def index():
     logs = list(log_buffer)[-20:]
     
     guilds = [{"id": g.id, "name": g.name} for g in bot.guilds] if is_ready else []
-    restricted_commands = ["search", "top", "links", "checktg", "rules", "setup_roles"]
+    # Добавили commands в список для админки
+    restricted_commands = ["search", "top", "links", "checktg", "rules", "setup_roles", "commands"]
 
     return render_template(
         'index.html', 
@@ -565,10 +563,8 @@ async def rules(ctx):
         timestamp=discord.utils.utcnow()
     )
     
-    # Картинка в правом верхнем углу
     embed.set_thumbnail(url="https://i.ibb.co/FLxXZwvv/199d4da6-4399-4d85-a447-7ed7c90129bf.png")
 
-    # Блок 1: Правила 1-3
     embed.add_field(
         name="⚖️ Общие положения",
         value=(
@@ -582,7 +578,6 @@ async def rules(ctx):
         inline=False
     )
 
-    # Блок 2: Правила 4-6
     embed.add_field(
         name="📂 Контент и порядок",
         value=(
@@ -596,7 +591,6 @@ async def rules(ctx):
         inline=False
     )
 
-    # Блок 3: Правила 7-10
     embed.add_field(
         name="🎙️ Голос и Администрация",
         value=(
@@ -659,6 +653,37 @@ async def links(ctx):
     embed.add_field(name="Основное", value="👨‍💻 **Разраб:** @spidelond\n💬 **Телеграм канал:** [t.me/Spidedev](https://t.me/Spidedev)\n🌐 **Веб версия:** [web.spide.ru](https://web.spide.ru)", inline=False)
     embed.add_field(name="Тестеры\\Хелперы", value="**Нимфоманка** — @Bloodthister \\\\ dedmak0193\n**Ucatatsu** — @Ucatatsu \\\\ ucatatsu\n**Валерий Александрович** — @prpavshiy \\\\ propavshiysnimok\n**Нефильтрованный** — @Q_ko1dick \\\\ prosto_mishka19\n**Смайл** — @Sm1Le_1337 \\\\ sm1le_1337", inline=False)
     embed.set_footer(text="Spide Music | Запросил " + ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name='commands')
+async def commands_list(ctx):
+    await ctx.message.delete() # Удаляет сообщение пользователя
+
+    embed = discord.Embed(
+        title="📋 Доступные команды",
+        description="Вот список команд, которые доступны всем участникам сервера:",
+        color=ORANGE,
+        timestamp=discord.utils.utcnow()
+    )
+
+    embed.add_field(
+        name="🎵 !search [запрос]",
+        value="Ищет трек, исполнителя или альбом в Spide. Пример: `!search Despacito`",
+        inline=False
+    )
+    embed.add_field(
+        name="🏆 !top",
+        value="Показывает топ-10 слушателей Spide за сегодняшний день.",
+        inline=False
+    )
+    embed.add_field(
+        name="🔗 !links",
+        value="Выводит полезные ссылки: сайт, Telegram-канал и список команды.",
+        inline=False
+    )
+
+    embed.set_footer(text="Spide Music | Запросил " + ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    
     await ctx.send(embed=embed)
 
 # ==============================
