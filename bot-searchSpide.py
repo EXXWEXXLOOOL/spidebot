@@ -3,16 +3,18 @@ from discord.ext import commands
 from curl_cffi import requests
 import urllib.parse
 import os
+import logging
+
+# Настраиваем логирование, чтобы Bothost сразу видел ошибки
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Берем данные из переменных Bothost
 RAW_COOKIE = os.getenv("SPIDE_COOKIE")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Чистим куки от лишних символов
 COOKIE_STRING = RAW_COOKIE.strip() if RAW_COOKIE else None
 
 class TrackView(discord.ui.View):
@@ -22,7 +24,7 @@ class TrackView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    print(f'Бот {bot.user} успешно запущен!')
+    logging.info(f'Бот {bot.user} успешно запущен!')
 
 @bot.command(name='search')
 async def search(ctx, *, query: str = None):
@@ -31,10 +33,11 @@ async def search(ctx, *, query: str = None):
         return
 
     if not COOKIE_STRING:
-        await ctx.send("❌ Ошибка: Куки Spide не настроены на сервере (переменная SPIDE_COOKIE).")
+        await ctx.send("❌ Ошибка: Куки Spide не настроены на сервере.")
         return
 
     msg = await ctx.send("🔎 Ищу трек...")
+    logging.info(f"Пользователь {ctx.author.name} ищет: {query}")
 
     encoded_query = urllib.parse.quote(query, safe='')
     url = f"https://web.spide.ru/api/v1/spotify/search?q={encoded_query}&type=all&limit=1"
@@ -47,20 +50,19 @@ async def search(ctx, *, query: str = None):
     }
 
     try:
-        # Используем curl_cffi
         response = requests.get(url, headers=headers, impersonate="chrome")
         
-        # Выводим ответ в логи Bothost
-        print(f"\n--- ОТВЕТ SPIDE ---\nСтатус: {response.status_code}\nТекст: {response.text[:200]}...\n-------------------")
+        # Теперь ошибки будут видны в логах Bothost моментально
+        logging.info(f"Ответ Spide: Статус {response.status_code}. Текст: {response.text[:150]}...")
 
         data = response.json()
         
-        # Если сервер вернул ошибку авторизации
         if "error" in data:
-            await msg.edit(content=f"❌ Ошибка Spide: `{data['error']}`. Ваши куки устарели. Обновите переменную SPIDE_COOKIE.")
+            await msg.edit(content=f"❌ Ошибка Spide: `{data['error']}`. Куки устарели.")
             return
             
     except Exception as e:
+        logging.error(f"Ошибка соединения: {e}")
         await msg.edit(content=f"❌ Ошибка соединения: {e}")
         return
 
@@ -99,4 +101,4 @@ async def search(ctx, *, query: str = None):
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
 else:
-    print("ОШИБКА: Не задан DISCORD_TOKEN!")
+    logging.error("ОШИБКА: Не задан DISCORD_TOKEN!")
