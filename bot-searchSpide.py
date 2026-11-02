@@ -73,6 +73,7 @@ app_config = load_config()
 # ==============================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True # Обязательно для приветствий!
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -83,8 +84,71 @@ SPIDE_TOP_LISTENERS = "https://web.spide.ru/api/v1/tops/listeners?tz=Europe/Mosc
 
 ORANGE = 0xFF8C00
 
-TOP_CHANNEL_ID = 1566895795654107217      
-UPDATE_CHANNEL_ID = 1566767775001616506   
+# ID КАНАЛОВ
+TOP_CHANNEL_ID = 1566895795654107217
+UPDATE_CHANNEL_ID = 1566767775001616506
+WELCOME_CHANNEL_ID = 1566767398588125194 # ЗАМЕНИ НА ID КАНАЛА #👋・приветствие
+
+# ==============================
+# WELCOME MESSAGE & ROLES
+# ==============================
+
+class RoleSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def handle_role(self, interaction: discord.Interaction, role_name: str):
+        role = discord.utils.get(interaction.guild.roles, name=role_name)
+        if not role:
+            await interaction.response.send_message(f"❌ Роль **{role_name}** не найдена. Админ, создай её!", ephemeral=True)
+            return
+
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role)
+            await interaction.response.send_message(f"✅ Роль **{role_name}** снята.", ephemeral=True)
+        else:
+            await interaction.user.add_roles(role)
+            await interaction.response.send_message(f"✅ Роль **{role_name}** выдана!", ephemeral=True)
+
+    @discord.ui.button(label="Android", style=discord.ButtonStyle.primary, emoji="🤖", custom_id="role_android")
+    async def android_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_role(interaction, "Android")
+
+    @discord.ui.button(label="Web", style=discord.ButtonStyle.success, emoji="🌐", custom_id="role_web")
+    async def web_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_role(interaction, "Web")
+
+    # 🚨 ЗАМЕНИЛИ APPLE НА DESKTOP
+    @discord.ui.button(label="Desktop", style=discord.ButtonStyle.secondary, emoji="💻", custom_id="role_desktop")
+    async def desktop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_role(interaction, "Desktop")
+
+@bot.event
+async def on_member_join(member):
+    channel = bot.get_channel(WELCOME_CHANNEL_ID)
+    if not channel:
+        return
+
+    welcome_text = (
+        "🕷 **Добро пожаловать в Spide!**\n"
+        "Рады видеть тебя в нашем сообществе!\n\n"
+        "Здесь мы объединяем людей, которые любят музыку, открывают новых исполнителей, делятся плейлистами и вместе развивают Spide.\n\n"
+        "**Для начала:**\n"
+        "・Ознакомься с правилами.\n"
+        "・Выбери интересующие тебя роли.\n"
+        "・Загляни в общий чат и познакомься с участниками.\n\n"
+        "Устраивайся поудобнее. Приятного прослушивания! 🎧"
+    )
+
+    embed = discord.Embed(description=welcome_text, color=ORANGE)
+    embed.set_image(url="https://i.ibb.co/cKF3rkLp/04d6bc14-b948-4156-b679-d10c4c0bf67b.png")
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"Spide Music • {member.name}")
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Слушать Spide", url="https://web.spide.ru", emoji="🎵"))
+
+    await channel.send(content=f"Привет, {member.mention}! 👋", embed=embed, view=view)
 
 # ==============================
 # WEB SERVER (FLASK)
@@ -321,9 +385,7 @@ async def force_top(target_channel):
             return False
 
         data = response.json()
-        
-        # 🎯 ПАРСИНГ ТОЧНО ПО ТВОЕМУ ЛОГУ
-        leaders = data.get("rows", []) # <-- Вот тут был затык!
+        leaders = data.get("rows", [])
         
         if not leaders:
             logging.error(f"Не удалось найти список слушателей. Ответ: {str(data)[:300]}")
@@ -336,31 +398,37 @@ async def force_top(target_channel):
 
         embed = discord.Embed(
             title="🏆 Топ-10 слушателей Spide", 
-            description=f"Обновлено за **{date_str}**\nВсего участников: `{total}`", 
+            description=f"**Обновлено за:** {date_str}\n**Всего участников:** `{total}`", 
             color=ORANGE,
             timestamp=discord.utils.utcnow()
         )
 
         medals = ["🥇", "🥈", "🥉"]
+        
         for i, row in enumerate(top_10[:3]):
-            # Достаем юзера из вложенного объекта
             user = row.get("user", {})
-            name = user.get("displayName") or user.get("username") or "Неизвестно"
-            score = row.get("score", 0) # Берем из корня строки
+            name = user.get("displayName") or "Неизвестно"
+            score = row.get("score", 0)
+            formatted_score = f"{score:,}".replace(",", " ")
             
-            embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**\n`{score:,}` мин".replace(",", " "), inline=True)
+            embed.add_field(
+                name=f"{medals[i]} {i+1} место", 
+                value=f"**{name}**\n`{formatted_score}` мин", 
+                inline=True
+            )
             
-            photo = user.get("photoUrl")
-            if i == 0 and photo: 
-                embed.set_thumbnail(url=photo)
+            if i == 0 and user.get("photoUrl"): 
+                embed.set_thumbnail(url=user["photoUrl"])
 
         if len(top_10) > 3:
             other_places = ""
             for i, row in enumerate(top_10[3:], 4):
                 user = row.get("user", {})
-                name = user.get("displayName") or user.get("username") or "Неизвестно"
+                name = user.get("displayName") or "Неизвестно"
                 score = row.get("score", 0)
-                other_places += f"**{i}.** {name} — `{score:,}` мин\n".replace(",", " ")
+                formatted_score = f"{score:,}".replace(",", " ")
+                
+                other_places += f"`{i:02d}.` **{name}** — `{formatted_score}` мин\n"
             
             embed.add_field(name="Остальные", value=other_places, inline=False)
 
@@ -372,10 +440,10 @@ async def force_top(target_channel):
         return True
 
     except Exception as e:
-        err_msg = f"❌ Ошибка получения топа: `{e}`"
-        logging.error(err_msg)
-        await target_channel.send(err_msg)
-        return False
+            err_msg = f"❌ Ошибка получения топа: `{e}`"
+            logging.error(err_msg)
+            await target_channel.send(err_msg)
+            return False
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
@@ -406,6 +474,17 @@ async def on_ready():
     logging.info(f"Бот {bot.user} успешно запущен!")
     if not daily_top_task.is_running(): daily_top_task.start()
     if not check_updates_task.is_running(): check_updates_task.start()
+
+@bot.command(name="setup_roles")
+@commands.has_permissions(administrator=True)
+async def setup_roles(ctx):
+    embed = discord.Embed(
+        title="🎭 Выбор платформы",
+        description="Нажмите на кнопку ниже, чтобы получить роль своей платформы. Так мы сможем пинговать вас только тогда, когда выходит обновление для вашего устройства!\n\n🤖 **Android**\n🌐 **Web**\n💻 **Desktop**",
+        color=ORANGE
+    )
+    await ctx.send(embed=embed, view=RoleSelectView())
+    await ctx.message.delete()
 
 @bot.command(name="search")
 async def search(ctx, *, query: str = None):
