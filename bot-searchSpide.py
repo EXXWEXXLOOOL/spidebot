@@ -110,14 +110,14 @@ def get_album_name(album):
 
 def search_spide(query, headers):
 
-    url = (
-        f"{SPIDE_API}?"
-        f"{urllib.parse.urlencode({
-            'q': query,
-            'type': 'all',
-            'limit': 10
-        })}"
-    )
+    # Формируем параметры отдельно
+    params = urllib.parse.urlencode({
+        "q": query,
+        "type": "all",
+        "limit": 10
+    })
+
+    url = f"{SPIDE_API}?{params}"
 
     response = requests.get(
         url,
@@ -177,13 +177,13 @@ def create_track_embed(track, ctx, query):
     # SEARCH LINK
     # ==========================
 
-    # Ищем по названию и исполнителю
     search_query = f"{title} {artists}".strip()
 
-    track_url = (
-        f"{SPIDE_SEARCH}?"
-        f"{urllib.parse.urlencode({'q': search_query})}"
-    )
+    search_params = urllib.parse.urlencode({
+        "q": search_query
+    })
+
+    track_url = f"{SPIDE_SEARCH}?{search_params}"
 
     # ==========================
     # EMBED
@@ -201,37 +201,30 @@ def create_track_embed(track, ctx, query):
         name="SPIDE MUSIC  /  TRACK"
     )
 
-    # Album cover
     if cover:
         embed.set_thumbnail(url=cover)
 
-    # Album
     embed.add_field(
         name="АЛЬБОМ",
         value=f"*{album_name[:1024]}*",
         inline=True
     )
 
-    # Duration
     embed.add_field(
         name="ДЛИТЕЛЬНОСТЬ",
         value=f"`{duration}`",
         inline=True
     )
 
-    # Search query
     embed.add_field(
         name="ПОИСКОВЫЙ ЗАПРОС",
         value=f"`{query[:100]}`",
         inline=False
     )
 
-    # Footer
-    avatar = ctx.author.display_avatar.url
-
     embed.set_footer(
         text=f"SPIDE MUSIC  •  Запросил {ctx.author.display_name}",
-        icon_url=avatar
+        icon_url=ctx.author.display_avatar.url
     )
 
     return embed, track_url
