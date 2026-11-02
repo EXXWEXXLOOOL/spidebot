@@ -8,9 +8,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Берем данные из переменных Bothost
 RAW_COOKIE = os.getenv("SPIDE_COOKIE")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
+# Чистим куки от лишних символов
 COOKIE_STRING = RAW_COOKIE.strip() if RAW_COOKIE else None
 
 class TrackView(discord.ui.View):
@@ -29,7 +31,7 @@ async def search(ctx, *, query: str = None):
         return
 
     if not COOKIE_STRING:
-        await ctx.send("❌ Ошибка: Куки Spide не настроены на сервере.")
+        await ctx.send("❌ Ошибка: Куки Spide не настроены на сервере (переменная SPIDE_COOKIE).")
         return
 
     msg = await ctx.send("🔎 Ищу трек...")
@@ -45,16 +47,17 @@ async def search(ctx, *, query: str = None):
     }
 
     try:
+        # Используем curl_cffi
         response = requests.get(url, headers=headers, impersonate="chrome")
         
-        # ВЫВОДИМ ТЕКСТ ОТВЕТА В ЛОГИ ХОСТИНГА
-        print(f"\n--- ОТВЕТ SPIDE ---\nСтатус: {response.status_code}\nТекст: {response.text}\n-------------------")
+        # Выводим ответ в логи Bothost
+        print(f"\n--- ОТВЕТ SPIDE ---\nСтатус: {response.status_code}\nТекст: {response.text[:200]}...\n-------------------")
 
         data = response.json()
         
-        # Если Spide вернул ошибку в JSON
+        # Если сервер вернул ошибку авторизации
         if "error" in data:
-            await msg.edit(content=f"❌ Ошибка Spide: {data['error']}. Куки умерли, нужны новые.")
+            await msg.edit(content=f"❌ Ошибка Spide: `{data['error']}`. Ваши куки устарели. Обновите переменную SPIDE_COOKIE.")
             return
             
     except Exception as e:
