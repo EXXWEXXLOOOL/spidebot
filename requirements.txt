@@ -2,3 +2,4 @@ discord.py
 curl_cffi
 beautifulsoup4
 lxml
+Flask
