@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from curl_cffi import requests # Используем библиотеку Python
+from curl_cffi import requests
 import urllib.parse
 import os
 
@@ -8,15 +8,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Берем данные из переменных окружения Bothost
 RAW_COOKIE = os.getenv("SPIDE_COOKIE")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Очищаем куки от невидимых символов (защита от ошибки latin-1)
-if RAW_COOKIE:
-    COOKIE_STRING = RAW_COOKIE.encode('latin-1', errors='ignore').decode('latin-1')
-else:
-    COOKIE_STRING = None
+COOKIE_STRING = RAW_COOKIE.strip() if RAW_COOKIE else None
 
 class TrackView(discord.ui.View):
     def __init__(self, url):
@@ -42,26 +37,26 @@ async def search(ctx, *, query: str = None):
     encoded_query = urllib.parse.quote(query, safe='')
     url = f"https://web.spide.ru/api/v1/spotify/search?q={encoded_query}&type=all&limit=1"
 
-    # Заголовки для запроса
     headers = {
         "accept": "application/json",
-        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         "referer": "https://web.spide.ru/search",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
         "Cookie": COOKIE_STRING
     }
 
     try:
-        # Делаем запрос через curl_cffi, притворяясь браузером Chrome
         response = requests.get(url, headers=headers, impersonate="chrome")
         
-        if response.status_code != 200:
-            print(f"Ошибка API: {response.status_code} - {response.text}")
-            await msg.edit(content=f"❌ Ошибка API Spide (код {response.status_code}). Возможно, устарели куки.")
-            return
-            
+        # ВЫВОДИМ ТЕКСТ ОТВЕТА В ЛОГИ ХОСТИНГА
+        print(f"\n--- ОТВЕТ SPIDE ---\nСтатус: {response.status_code}\nТекст: {response.text}\n-------------------")
+
         data = response.json()
         
+        # Если Spide вернул ошибку в JSON
+        if "error" in data:
+            await msg.edit(content=f"❌ Ошибка Spide: {data['error']}. Куки умерли, нужны новые.")
+            return
+            
     except Exception as e:
         await msg.edit(content=f"❌ Ошибка соединения: {e}")
         return
@@ -86,29 +81,19 @@ async def search(ctx, *, query: str = None):
     
     track_url = f"https://web.spide.ru/track/{track_id}"
 
-    embed = discord.Embed(
-        title=f"🎵 {title}",
-        url=track_url,
-        color=0xFF8C00
-    )
-    
+    embed = discord.Embed(title=f"🎵 {title}", url=track_url, color=0xFF8C00)
     if cover:
         embed.set_thumbnail(url=cover)
         
     embed.add_field(name="👤 Исполнитель", value=f"**{artists}**", inline=True)
     embed.add_field(name="💿 Альбом", value=f"*{album_name}*", inline=True)
     embed.add_field(name="⏱️ Длительность", value=f"`{duration_str}`", inline=True)
-    
-    embed.set_footer(
-        text=f"Spide Music | Запросил {ctx.author.name}", 
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
-    )
+    embed.set_footer(text=f"Spide Music | Запросил {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
     view = TrackView(track_url)
     await msg.edit(content=None, embed=embed, view=view)
 
-# Запуск бота
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
 else:
-    print("ОШИБКА: Не задан DISCORD_TOKEN в переменных окружения!")
+    print("ОШИБКА: Не задан DISCORD_TOKEN!")
