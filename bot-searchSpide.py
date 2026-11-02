@@ -12,12 +12,11 @@ import re
 import threading
 import json
 import collections
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for
 
 # ==============================
 # LOGGING & MEMORY BUFFER
 # ==============================
-# Создаем буфер в памяти для хранения последних логов, чтобы показывать их на сайте
 log_buffer = collections.deque(maxlen=50)
 
 class MemoryLogHandler(logging.Handler):
@@ -80,11 +79,14 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spide.ru/search"
-SPIDE_TOP_SUMMARY = "https://web.spide.ru/api/v1/tops/summary?tz=Europe/Moscow"
+# Эндпоинт для топ-10 (список слушателей)
+SPIDE_TOP_LISTENERS = "https://web.spide.ru/api/v1/tops/listeners?tz=Europe/Moscow"
 
 ORANGE = 0xFF8C00
-TOP_CHANNEL_ID = 1422240878105198734      
-UPDATE_CHANNEL_ID = 1566767775001616506   
+
+# 🚨 ОБНОВЛЕННЫЕ ID КАНАЛОВ
+TOP_CHANNEL_ID = 1566895795654107217      # Твой новый ID для авто-топа
+UPDATE_CHANNEL_ID = 1566767775001616506   # Канал для постов из Telegram
 
 # ==============================
 # WEB SERVER (FLASK)
@@ -97,15 +99,11 @@ def index():
     is_ready = bot.is_ready()
     guild_count = len(bot.guilds) if is_ready else 0
     ping = round(bot.latency * 1000) if is_ready else 0
-    
-    # Берем последние 20 логов
     logs = list(log_buffer)[-20:]
     
     return render_template(
         'index.html', 
-        guilds=guild_count, 
-        latency=ping, 
-        status=is_ready,
+        guilds=guild_count, latency=ping, status=is_ready,
         channels=app_config.get("tg_channels", []),
         cookie=app_config.get("SPIDE_COOKIE", ""),
         logs=logs
@@ -149,7 +147,6 @@ def update_cookie():
 
 @web_app.route('/trigger_checktg')
 def trigger_checktg():
-    # Запускаем проверку ТГК в основном потоке бота
     if bot.loop:
         asyncio.run_coroutine_threadsafe(force_checktg(), bot.loop)
         logging.info("Запущена ручная проверка Telegram.")
@@ -157,9 +154,11 @@ def trigger_checktg():
 
 @web_app.route('/trigger_top')
 def trigger_top():
-    if bot.loop:
-        asyncio.run_coroutine_threadsafe(force_top(), bot.loop)
-        logging.info("Запущена ручная отправка топа.")
+    # Для кнопки на сайте отправляем в канал по умолчанию
+    channel = bot.get_channel(TOP_CHANNEL_ID)
+    if bot.loop and channel:
+        asyncio.run_coroutine_threadsafe(force_top(channel), bot.loop)
+        logging.info("Запущена ручная отправка топа в канал по умолчанию.")
     return redirect(url_for('index'))
 
 @web_app.route('/test_cookie')
@@ -302,39 +301,76 @@ async def force_checktg():
 async def check_updates_task():
     await force_checktg()
 
-async def force_top():
+async def force_top(target_channel):
     global app_config
     app_config = load_config()
     cookie = app_config.get("SPIDE_COOKIE", "")
-    if not cookie: return
-
-    channel = bot.get_channel(TOP_CHANNEL_ID)
-    if not channel: return
+    if not cookie or not target_channel: return
 
     headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
+    
     try:
-        response = await asyncio.to_thread(requests.get, SPIDE_TOP_SUMMARY, headers=headers, impersonate="chrome", timeout=20)
+        # Используем эндпоинт tops/listeners для получения списка
+        response = await asyncio.to_thread(requests.get, SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
         response.raise_for_status()
         data = response.json()
-        listeners_board = next((b for b in data.get("boards", []) if b.get("board") == "listeners"), None)
-        if not listeners_board: return
+        
+        # Ищем массив с лидерами (может называться leaders или listeners)
+        leaders = data.get("leaders", [])
+        if not leaders and "listeners" in data:
+            leaders = data.get("listeners", [])
+            
+        if not leaders:
+            await target_channel.send("⚠️ Не удалось получить список слушателей (возможно, изменился API).")
+            return
 
-        leaders = listeners_board.get("leaders", [])[:3]
-        total = listeners_board.get("total", 0)
-        embed = discord.Embed(title="🏆 Топ слушателей Spide", description=f"Обновлено за **{data.get('day', 'Сегодня')}**\nВсего участников: `{total}`", color=ORANGE)
-        for i, leader in enumerate(leaders):
-            medals = ["🥇", "🥈", "🥉"]
-            embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{leader.get('displayName', 'Неизвестно')}**", inline=True)
-            if i == 0 and leader.get("photoUrl"): embed.set_thumbnail(url=leader["photoUrl"])
+        # Берем топ-10
+        top_10 = leaders[:10]
+        total = data.get("total", 0)
+        date_str = data.get("day", "Сегодня")
+
+        embed = discord.Embed(
+            title="🏆 Топ-10 слушателей Spide", 
+            description=f"Обновлено за **{date_str}**\nВсего участников: `{total}`", 
+            color=ORANGE,
+            timestamp=discord.utils.utcnow()
+        )
+
+        # Формируем пьедестал для топ-3
+        medals = ["🥇", "🥈", "🥉"]
+        for i, leader in enumerate(top_10[:3]):
+            name = leader.get("displayName", "Неизвестно")
+            # Пытаемся достать очки (score, minutes или listenedMs)
+            score = leader.get("score", leader.get("minutes", leader.get("listenedMs", 0)))
+            embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**\n`{score:,}` мин".replace(",", " "), inline=True)
+            
+            if i == 0 and leader.get("photoUrl"): 
+                embed.set_thumbnail(url=leader["photoUrl"])
+
+        # Формируем список для 4-10 места
+        if len(top_10) > 3:
+            other_places = ""
+            for i, leader in enumerate(top_10[3:], 4):
+                name = leader.get("displayName", "Неизвестно")
+                score = leader.get("score", leader.get("minutes", leader.get("listenedMs", 0)))
+                other_places += f"**{i}.** {name} — `{score:,}` мин\n".replace(",", " ")
+            
+            embed.add_field(name="Остальные", value=other_places, inline=False)
+
         embed.set_footer(text="SPIDE MUSIC  •  Автоматическое обновление")
-        await channel.send(embed=embed)
-        logging.info("Топ успешно отправлен вручную.")
+        await target_channel.send(embed=embed)
+        
+        if target_channel.id == TOP_CHANNEL_ID:
+            logging.info("Автоматический топ-10 успешно отправлен в канал.")
+
     except Exception as e:
-        logging.error(f"Ошибка топа: {e}")
+        logging.error(f"Ошибка получения топа: {e}")
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
-    await force_top()
+    channel = bot.get_channel(TOP_CHANNEL_ID)
+    if channel: 
+        await force_top(channel)
 
 async def test_spide_cookie():
     cookie = app_config.get("SPIDE_COOKIE", "")
@@ -388,8 +424,10 @@ async def search(ctx, *, query: str = None):
 
 @bot.command(name="top")
 async def top_now(ctx):
-    await ctx.send("⏳ Собираю топ...")
-    await force_top()
+    msg = await ctx.send("⏳ Собираю топ-10...")
+    # 🚨 ВАЖНО: Передаем ctx.channel, чтобы ответить там, где вызвали команду
+    await force_top(ctx.channel)
+    await msg.delete()
 
 @bot.command(name="checktg")
 async def checktg_now(ctx):
