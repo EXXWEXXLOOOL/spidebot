@@ -1,19 +1,22 @@
 import discord
 from discord.ext import commands
+from curl_cffi import requests # Используем библиотеку Python
 import urllib.parse
-import subprocess
-import json
-import os # <--- Добавлено для работы с переменными окружения
+import os
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Бот берет куки из переменной окружения на хостинге
-COOKIE_STRING = os.getenv("SPIDE_COOKIE")
-
-# Бот берет токен из переменной окружения на хостинге
+# Берем данные из переменных окружения Bothost
+RAW_COOKIE = os.getenv("SPIDE_COOKIE")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
+# Очищаем куки от невидимых символов (защита от ошибки latin-1)
+if RAW_COOKIE:
+    COOKIE_STRING = RAW_COOKIE.encode('latin-1', errors='ignore').decode('latin-1')
+else:
+    COOKIE_STRING = None
 
 class TrackView(discord.ui.View):
     def __init__(self, url):
@@ -30,7 +33,6 @@ async def search(ctx, *, query: str = None):
         await ctx.send("❌ Напишите название трека. Пример: `!search Despacito`")
         return
 
-    # Проверка, что куки вообще есть
     if not COOKIE_STRING:
         await ctx.send("❌ Ошибка: Куки Spide не настроены на сервере.")
         return
@@ -40,41 +42,28 @@ async def search(ctx, *, query: str = None):
     encoded_query = urllib.parse.quote(query, safe='')
     url = f"https://web.spide.ru/api/v1/spotify/search?q={encoded_query}&type=all&limit=1"
 
-    # Собираем команду curl
-    cmd = [
-        "curl", "-s", "-X", "GET", url,
-        "-H", "accept: application/json",
-        "-H", "accept-language: ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        "-H", "cache-control: no-cache",
-        "-H", f"cookie: {COOKIE_STRING}", # Передаем куки
-        "-H", "pragma: no-cache",
-        "-H", "priority: u=1, i",
-        "-H", "referer: https://web.spide.ru/search",
-        "-H", 'sec-ch-ua: "Not:A-Brand";v="8", "Chromium";v="156", "Google Chrome";v="156"',
-        "-H", "sec-ch-ua-mobile: ?0",
-        "-H", 'sec-ch-ua-platform: "Windows"',
-        "-H", "sec-fetch-dest: empty",
-        "-H", "sec-fetch-mode: cors",
-        "-H", "sec-fetch-site: same-origin",
-        "-H", "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-        "-H", "x-audio-fallback: 2"
-    ]
+    # Заголовки для запроса
+    headers = {
+        "accept": "application/json",
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "referer": "https://web.spide.ru/search",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        "Cookie": COOKIE_STRING
+    }
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+        # Делаем запрос через curl_cffi, притворяясь браузером Chrome
+        response = requests.get(url, headers=headers, impersonate="chrome")
         
-        if result.returncode != 0:
-            await msg.edit(content=f"❌ Ошибка выполнения curl: {result.stderr}")
+        if response.status_code != 200:
+            print(f"Ошибка API: {response.status_code} - {response.text}")
+            await msg.edit(content=f"❌ Ошибка API Spide (код {response.status_code}). Возможно, устарели куки.")
             return
             
-        data = json.loads(result.stdout)
+        data = response.json()
         
-    except json.JSONDecodeError:
-        await msg.edit(content=f"❌ Ошибка сервера: не удалось прочитать ответ. Проверьте куки.")
-        print(f"Ответ сервера: {result.stdout}")
-        return
     except Exception as e:
-        await msg.edit(content=f"❌ Неизвестная ошибка: {e}")
+        await msg.edit(content=f"❌ Ошибка соединения: {e}")
         return
 
     tracks = data.get("tracks", [])
@@ -118,5 +107,8 @@ async def search(ctx, *, query: str = None):
     view = TrackView(track_url)
     await msg.edit(content=None, embed=embed, view=view)
 
-# Запуск бота с токеном из переменной окружения
-bot.run(DISCORD_TOKEN)
+# Запуск бота
+if DISCORD_TOKEN:
+    bot.run(DISCORD_TOKEN)
+else:
+    print("ОШИБКА: Не задан DISCORD_TOKEN в переменных окружения!")
