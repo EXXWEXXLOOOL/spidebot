@@ -36,8 +36,8 @@ SPIDE_TOP_SUMMARY = "https://web.spide.ru/api/v1/tops/summary?tz=Europe/Moscow"
 
 ORANGE = 0xFF8C00
 
-# 🚨 ВСТАВЬ СЮДА ID КАНАЛА, КУДА БОТ БУДЕТ ПРИСЫЛАТЬ АВТО-ТОП
-TOP_CHANNEL_ID = 123456789012345678 
+# Твой ID канала для авто-топов
+TOP_CHANNEL_ID = 1422240878105198734 
 
 # ==============================
 # HELPERS & VIEWS
@@ -173,7 +173,6 @@ async def daily_top_task():
         for i, leader in enumerate(leaders[:3]):
             name = leader.get("displayName", "Неизвестно")
             avatar = leader.get("photoUrl")
-            # Примечание: в этом JSON нет минут для 2 и 3 места, поэтому выводим только имена
             embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**", inline=True)
             
             # Если это первое место, ставим его аватарку как картинку
@@ -234,8 +233,7 @@ async def search(ctx, *, query: str = None):
 # Команда для ручного вызова топа прямо сейчас (для теста)
 @bot.command(name="top")
 async def top_now(ctx):
-    if ctx.channel.id != TOP_CHANNEL_ID:
-        await ctx.send("Топ отправляется в специальный канал, но я продублирую его здесь для теста!")
+    await ctx.send("Собираю топ...")
     # Принудительно вызываем задачу
     await daily_top_task()
 
