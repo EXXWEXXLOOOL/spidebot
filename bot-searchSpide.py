@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands
 from curl_cffi import requests
@@ -35,16 +34,13 @@ SPIDE_SEARCH = "https://web.spide.ru/search"
 
 ORANGE = 0xFF8C00
 
-
 # ==============================
 # TRACK VIEW
 # ==============================
 
 class TrackView(discord.ui.View):
-
     def __init__(self, url):
         super().__init__(timeout=180)
-
         self.add_item(
             discord.ui.Button(
                 label="Слушать в Spide",
@@ -54,13 +50,11 @@ class TrackView(discord.ui.View):
             )
         )
 
-
 # ==============================
 # HELPERS
 # ==============================
 
 def format_duration(duration_ms):
-
     try:
         duration_ms = int(duration_ms or 0)
     except (ValueError, TypeError):
@@ -68,17 +62,12 @@ def format_duration(duration_ms):
 
     minutes = duration_ms // 60000
     seconds = (duration_ms % 60000) // 1000
-
-    return f"{minutes}:{seconds:02d}"
-
+    return str(minutes) + ":" + str(seconds).zfill(2)
 
 def format_artists(artists):
-
     if not isinstance(artists, list):
         return "Неизвестный исполнитель"
-
     names = []
-
     for artist in artists:
         if isinstance(artist, dict):
             name = artist.get("name")
@@ -86,38 +75,29 @@ def format_artists(artists):
             name = artist
         else:
             name = None
-
         if name:
             names.append(str(name))
-
     return ", ".join(names) if names else "Неизвестный исполнитель"
 
-
 def get_album_name(album):
-
     if isinstance(album, dict):
         return album.get("title") or album.get("name") or "Сингл"
-
     if isinstance(album, str):
         return album or "Сингл"
-
     return "Сингл"
-
 
 # ==============================
 # API REQUEST
 # ==============================
 
 def search_spide(query, headers):
-
-    # Формируем параметры отдельно
     params = urllib.parse.urlencode({
         "q": query,
         "type": "all",
         "limit": 10
     })
-
-    url = f"{SPIDE_API}?{params}"
+    
+    url = SPIDE_API + "?" + params
 
     response = requests.get(
         url,
@@ -126,13 +106,8 @@ def search_spide(query, headers):
         timeout=20
     )
 
-    logging.info(
-        "Spide response: HTTP %s",
-        response.status_code
-    )
-
+    logging.info("Spide response: HTTP %s", response.status_code)
     response.raise_for_status()
-
     data = response.json()
 
     if not isinstance(data, dict):
@@ -143,92 +118,60 @@ def search_spide(query, headers):
 
     return data
 
-
 # ==============================
 # EMBED DESIGN
 # ==============================
 
 def create_track_embed(track, ctx, query):
-
-    title = str(
-        track.get("title") or "Неизвестный трек"
-    )
-
-    artists = format_artists(
-        track.get("artists", [])
-    )
-
-    album_name = get_album_name(
-        track.get("album")
-    )
-
-    duration = format_duration(
-        track.get("durationMs", 0)
-    )
-
+    title = str(track.get("title") or "Неизвестный трек")
+    artists = format_artists(track.get("artists", []))
+    album_name = get_album_name(track.get("album"))
+    duration = format_duration(track.get("durationMs", 0))
+    
     cover = track.get("cover")
-
-    if not isinstance(cover, str) or not cover.startswith(
-        ("https://", "http://")
-    ):
+    if not isinstance(cover, str) or not cover.startswith(("https://", "http://")):
         cover = None
 
-    # ==========================
-    # SEARCH LINK
-    # ==========================
-
-    search_query = f"{title} {artists}".strip()
-
-    search_params = urllib.parse.urlencode({
-        "q": search_query
-    })
-
-    track_url = f"{SPIDE_SEARCH}?{search_params}"
-
-    # ==========================
-    # EMBED
-    # ==========================
+    # Генерируем ссылку на поиск по треку и исполнителю
+    search_query = (title + " " + artists).strip()
+    search_params = urllib.parse.urlencode({"q": search_query})
+    track_url = SPIDE_SEARCH + "?" + search_params
 
     embed = discord.Embed(
         title=title[:256],
         url=track_url,
-        description=f"**{artists[:1000]}**",
+        description="**" + artists[:1000] + "**",
         color=ORANGE,
         timestamp=discord.utils.utcnow()
     )
 
-    embed.set_author(
-        name="SPIDE MUSIC  /  TRACK"
-    )
+    embed.set_author(name="SPIDE MUSIC  /  TRACK")
 
     if cover:
         embed.set_thumbnail(url=cover)
 
     embed.add_field(
         name="АЛЬБОМ",
-        value=f"*{album_name[:1024]}*",
+        value="*" + album_name[:1024] + "*",
         inline=True
     )
-
     embed.add_field(
         name="ДЛИТЕЛЬНОСТЬ",
-        value=f"`{duration}`",
+        value="`" + duration + "`",
         inline=True
     )
-
     embed.add_field(
         name="ПОИСКОВЫЙ ЗАПРОС",
-        value=f"`{query[:100]}`",
+        value="`" + query[:100] + "`",
         inline=False
     )
 
     embed.set_footer(
-        text=f"SPIDE MUSIC  •  Запросил {ctx.author.display_name}",
+        text="SPIDE MUSIC  •  Запросил " + ctx.author.display_name,
         icon_url=ctx.author.display_avatar.url
     )
 
     return embed, track_url
-
 
 # ==============================
 # EVENTS
@@ -236,12 +179,7 @@ def create_track_embed(track, ctx, query):
 
 @bot.event
 async def on_ready():
-
-    logging.info(
-        "Бот %s успешно запущен!",
-        bot.user
-    )
-
+    logging.info("Бот %s успешно запущен!", bot.user)
 
 # ==============================
 # SEARCH COMMAND
@@ -249,43 +187,22 @@ async def on_ready():
 
 @bot.command(name="search")
 async def search(ctx, *, query: str = None):
-
     if not query or not query.strip():
-
-        await ctx.send(
-            "Напиши название трека.\n"
-            "Пример: `!search Despacito`"
-        )
-
+        await ctx.send("Напиши название трека.\nПример: `!search Despacito`")
         return
 
     if not COOKIE_STRING:
-
-        await ctx.send(
-            "Ошибка: Cookie Spide не настроены."
-        )
-
+        await ctx.send("Ошибка: Cookie Spide не настроены.")
         return
 
     query = query.strip()
 
     if len(query) > 200:
-
-        await ctx.send(
-            "Слишком длинный поисковый запрос."
-        )
-
+        await ctx.send("Слишком длинный поисковый запрос.")
         return
 
-    msg = await ctx.send(
-        "🔎 Ищу треки в Spide..."
-    )
-
-    logging.info(
-        "Пользователь %s ищет: %s",
-        ctx.author.name,
-        query
-    )
+    msg = await ctx.send("🔎 Ищу треки в Spide...")
+    logging.info("Пользователь %s ищет: %s", ctx.author.name, query)
 
     headers = {
         "accept": "application/json",
@@ -306,24 +223,14 @@ async def search(ctx, *, query: str = None):
     }
 
     try:
-
-        data = await asyncio.to_thread(
-            search_spide,
-            query,
-            headers
-        )
-
+        data = await asyncio.to_thread(search_spide, query, headers)
         tracks = data.get("tracks", [])
 
         if not isinstance(tracks, list):
             tracks = []
 
         if not tracks:
-
-            await msg.edit(
-                content=f"По запросу **{query}** ничего не найдено."
-            )
-
+            await msg.edit(content="По запросу **" + query + "** ничего не найдено.")
             return
 
         track = tracks[0]
@@ -331,46 +238,31 @@ async def search(ctx, *, query: str = None):
         if not isinstance(track, dict):
             raise ValueError("Некорректные данные трека")
 
-        embed, track_url = create_track_embed(
-            track,
-            ctx,
-            query
-        )
-
+        embed, track_url = create_track_embed(track, ctx, query)
         view = TrackView(track_url)
 
-        await msg.edit(
-            content=None,
-            embed=embed,
-            view=view
-        )
-
+        await msg.edit(content=None, embed=embed, view=view)
+        
         logging.info(
-            "Найден трек: %s — %s",
-            format_artists(track.get("artists", [])),
+            "Найден трек: %s — %s", 
+            format_artists(track.get("artists", [])), 
             track.get("title")
         )
 
     except Exception as e:
-
         logging.exception("Ошибка поиска Spide")
-
         await msg.edit(
-            content=f"Ошибка поиска: `{str(e)[:500]}`",
+            content="Ошибка поиска: `" + str(e)[:500] + "`",
             embed=None,
             view=None
         )
-
 
 # ==============================
 # START
 # ==============================
 
 if __name__ == "__main__":
-
     if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN)
     else:
-        logging.error(
-            "ОШИБКА: Не задан DISCORD_TOKEN!"
-        )
+        logging.error("ОШИБКА: Не задан DISCORD_TOKEN!")
