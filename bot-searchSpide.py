@@ -11,18 +11,36 @@ import datetime
 import re
 import threading
 import json
-from flask import Flask, render_template, request, redirect, url_for
+import collections
+from flask import Flask, render_template, request, redirect, url_for, flash
+
+# ==============================
+# LOGGING & MEMORY BUFFER
+# ==============================
+# Создаем буфер в памяти для хранения последних логов, чтобы показывать их на сайте
+log_buffer = collections.deque(maxlen=50)
+
+class MemoryLogHandler(logging.Handler):
+    def emit(self, record):
+        log_buffer.append(self.format(record))
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
+handler = MemoryLogHandler()
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 # ==============================
 # CONFIGURATION & STORAGE
 # ==============================
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 DATA_DIR = os.getenv("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-# Дефолтные настройки, если файла конфига еще нет
 DEFAULT_CONFIG = {
     "SPIDE_COOKIE": os.getenv("SPIDE_COOKIE", ""),
     "tg_channels": ["dsdedmak0193"],
@@ -34,7 +52,6 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Если ключей не хватает, добиваем дефолтными
                 for key in DEFAULT_CONFIG:
                     if key not in data:
                         data[key] = DEFAULT_CONFIG[key]
@@ -50,13 +67,11 @@ def save_config(config):
     except Exception as e:
         logging.error(f"Ошибка сохранения конфига: {e}")
 
-# Загружаем конфиг при старте
 app_config = load_config()
 
 # ==============================
 # BOT SETUP
 # ==============================
-
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -74,8 +89,8 @@ UPDATE_CHANNEL_ID = 1566767775001616506
 # ==============================
 # WEB SERVER (FLASK)
 # ==============================
-
 web_app = Flask(__name__)
+web_app.secret_key = 'spide_super_secret_key'
 
 @web_app.route('/')
 def index():
@@ -83,27 +98,35 @@ def index():
     guild_count = len(bot.guilds) if is_ready else 0
     ping = round(bot.latency * 1000) if is_ready else 0
     
-    # Передаем текущий конфиг в HTML
+    # Берем последние 20 логов
+    logs = list(log_buffer)[-20:]
+    
     return render_template(
         'index.html', 
         guilds=guild_count, 
         latency=ping, 
         status=is_ready,
         channels=app_config.get("tg_channels", []),
-        cookie=app_config.get("SPIDE_COOKIE", "")
+        cookie=app_config.get("SPIDE_COOKIE", ""),
+        logs=logs
     )
 
 @web_app.route('/add_channel', methods=['POST'])
 def add_channel():
     global app_config
-    new_channel = request.form.get('channel_name', '').strip().replace('@', '')
-    if new_channel and new_channel not in app_config["tg_channels"]:
-        app_config["tg_channels"].append(new_channel)
-        app_config["last_ids"][new_channel] = 0
+    raw_name = request.form.get('channel_name', '')
+    clean_name = raw_name.strip()
+    clean_name = re.sub(r'^(https?://)?(t\.me/)?', '', clean_name)
+    clean_name = clean_name.replace('@', '').replace('/', '').strip()
+
+    if clean_name and clean_name not in app_config["tg_channels"]:
+        app_config["tg_channels"].append(clean_name)
+        app_config["last_ids"][clean_name] = 0
         save_config(app_config)
+        logging.info(f"Добавлен новый ТГ канал: {clean_name}")
     return redirect(url_for('index'))
 
-@web_app.route('/delete_channel/<channel_name>', methods=['POST'])
+@web_app.route('/delete_channel/<path:channel_name>', methods=['POST'])
 def delete_channel(channel_name):
     global app_config
     if channel_name in app_config["tg_channels"]:
@@ -111,6 +134,7 @@ def delete_channel(channel_name):
         if channel_name in app_config["last_ids"]:
             del app_config["last_ids"][channel_name]
         save_config(app_config)
+        logging.info(f"Удален ТГ канал: {channel_name}")
     return redirect(url_for('index'))
 
 @web_app.route('/update_cookie', methods=['POST'])
@@ -123,9 +147,26 @@ def update_cookie():
         logging.info("Куки Spide обновлены через веб-панель!")
     return redirect(url_for('index'))
 
-@web_app.route('/health')
-def health():
-    return "OK", 200
+@web_app.route('/trigger_checktg')
+def trigger_checktg():
+    # Запускаем проверку ТГК в основном потоке бота
+    if bot.loop:
+        asyncio.run_coroutine_threadsafe(force_checktg(), bot.loop)
+        logging.info("Запущена ручная проверка Telegram.")
+    return redirect(url_for('index'))
+
+@web_app.route('/trigger_top')
+def trigger_top():
+    if bot.loop:
+        asyncio.run_coroutine_threadsafe(force_top(), bot.loop)
+        logging.info("Запущена ручная отправка топа.")
+    return redirect(url_for('index'))
+
+@web_app.route('/test_cookie')
+def test_cookie():
+    if bot.loop:
+        asyncio.run_coroutine_threadsafe(test_spide_cookie(), bot.loop)
+    return redirect(url_for('index'))
 
 def run_web_server():
     port = int(os.getenv("PORT", 3000))
@@ -140,7 +181,6 @@ def start_web_panel():
 # ==============================
 # HELPERS & VIEWS
 # ==============================
-
 class TrackView(discord.ui.View):
     def __init__(self, url):
         super().__init__(timeout=180)
@@ -185,9 +225,8 @@ def create_track_embed(track, ctx, query):
     return embed, track_url
 
 # ==============================
-# TELEGRAM PARSER (Обновлен для работы с несколькими каналами)
+# TELEGRAM PARSER & TASKS
 # ==============================
-
 def fetch_all_tg_posts(channel_name):
     headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     url = f"https://t.me/s/{channel_name}"
@@ -221,11 +260,9 @@ def fetch_all_tg_posts(channel_name):
         logging.error(f"Ошибка парсинга {channel_name}: {e}")
         return []
 
-@tasks.loop(minutes=10)
-async def check_updates_task():
+async def force_checktg():
     global app_config
-    app_config = load_config() # Подгружаем актуальные настройки с сайта
-
+    app_config = load_config() 
     channel = bot.get_channel(UPDATE_CHANNEL_ID)
     if not channel: return
 
@@ -234,7 +271,6 @@ async def check_updates_task():
         if not posts: continue
 
         last_id = app_config["last_ids"].get(tg_channel, 0)
-
         if last_id == 0:
             max_id = max(p['id'] for p in posts)
             app_config["last_ids"][tg_channel] = max_id
@@ -247,15 +283,8 @@ async def check_updates_task():
         for post in new_posts:
             raw_text = post["text"][:4000] if post["text"] else "*Пост с изображением*"
             quoted_text = "\n".join(f"> {line}" for line in raw_text.split("\n"))
-
-            embed = discord.Embed(
-                title=f"📢 Новый пост в @{tg_channel}",
-                description=quoted_text,
-                color=ORANGE,
-                timestamp=discord.utils.utcnow()
-            )
+            embed = discord.Embed(title=f"📢 Новый пост в @{tg_channel}", description=quoted_text, color=ORANGE, timestamp=discord.utils.utcnow())
             if post.get("image_url"): embed.set_image(url=post["image_url"])
-
             embed.add_field(name="Ссылка на пост", value=f"[Открыть в Telegram](https://t.me/{tg_channel}/{post['id']})", inline=False)
             embed.set_footer(text="SPIDE MUSIC  •  Автоматическая рассылка")
             
@@ -269,15 +298,18 @@ async def check_updates_task():
             app_config["last_ids"][tg_channel] = new_posts[-1]['id']
             save_config(app_config)
 
-# ==============================
-# TOP TASK
-# ==============================
+@tasks.loop(minutes=10)
+async def check_updates_task():
+    await force_checktg()
 
-async def send_top_to_channel(channel):
+async def force_top():
     global app_config
-    app_config = load_config() # Подгружаем актуальную куку с сайта
+    app_config = load_config()
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie: return
+
+    channel = bot.get_channel(TOP_CHANNEL_ID)
+    if not channel: return
 
     headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
     try:
@@ -296,18 +328,32 @@ async def send_top_to_channel(channel):
             if i == 0 and leader.get("photoUrl"): embed.set_thumbnail(url=leader["photoUrl"])
         embed.set_footer(text="SPIDE MUSIC  •  Автоматическое обновление")
         await channel.send(embed=embed)
+        logging.info("Топ успешно отправлен вручную.")
     except Exception as e:
         logging.error(f"Ошибка топа: {e}")
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
-    channel = bot.get_channel(TOP_CHANNEL_ID)
-    if channel: await send_top_to_channel(channel)
+    await force_top()
+
+async def test_spide_cookie():
+    cookie = app_config.get("SPIDE_COOKIE", "")
+    if not cookie:
+        logging.warning("Тест куки: Куки не заданы!")
+        return
+    headers = {"accept": "application/json", "Cookie": cookie}
+    try:
+        response = await asyncio.to_thread(requests.get, f"{SPIDE_API}?q=test&type=all&limit=1", headers=headers, impersonate="chrome", timeout=10)
+        if response.status_code == 200:
+            logging.info("✅ Тест куки: УСПЕШНО! Куки рабочие.")
+        else:
+            logging.error(f"❌ Тест куки: ОШИБКА {response.status_code}. Куки протухли.")
+    except Exception as e:
+        logging.error(f"❌ Тест куки: Ошибка соединения - {e}")
 
 # ==============================
 # EVENTS & COMMANDS
 # ==============================
-
 @bot.event
 async def on_ready():
     logging.info(f"Бот {bot.user} успешно запущен!")
@@ -342,14 +388,13 @@ async def search(ctx, *, query: str = None):
 
 @bot.command(name="top")
 async def top_now(ctx):
-    msg = await ctx.send("⏳ Собираю топ...")
-    await send_top_to_channel(ctx.channel)
-    await msg.delete()
+    await ctx.send("⏳ Собираю топ...")
+    await force_top()
 
 @bot.command(name="checktg")
 async def checktg_now(ctx):
     await ctx.send(f"🔍 Проверяю все Telegram-каналы...")
-    await check_updates_task()
+    await force_checktg()
     await ctx.send("✅ Проверка завершена!")
 
 @bot.command(name='links')
@@ -364,7 +409,6 @@ async def links(ctx):
 # ==============================
 # START
 # ==============================
-
 if __name__ == "__main__":
     if DISCORD_TOKEN:
         start_web_panel()
