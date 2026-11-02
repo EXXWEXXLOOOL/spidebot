@@ -10,7 +10,7 @@ import logging
 import datetime
 import re
 import threading
-from flask import Flask
+from flask import Flask, render_template
 
 # ==============================
 # CONFIGURATION
@@ -59,7 +59,17 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def index():
-    return "<h1>Панель управления SpideBot</h1><p>Бот работает и готов к управлению!</p>"
+    # Собираем статистику бота в реальном времени
+    is_ready = bot.is_ready()
+    guild_count = len(bot.guilds) if is_ready else 0
+    ping = round(bot.latency * 1000) if is_ready else 0
+    
+    return render_template(
+        'index.html', 
+        guilds=guild_count, 
+        latency=ping, 
+        status=is_ready
+    )
 
 @web_app.route('/health')
 def health():
