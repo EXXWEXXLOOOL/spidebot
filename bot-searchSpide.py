@@ -8,7 +8,6 @@ import urllib.parse
 import os
 import logging
 import datetime
-import re
 
 # ==============================
 # CONFIGURATION
@@ -36,15 +35,14 @@ SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spide.ru/search"
 SPIDE_TOP_SUMMARY = "https://web.spide.ru/api/v1/tops/summary?tz=Europe/Moscow"
 
-# НАСТРОЙКИ TELEGRAM
+# НАСТРОЙКИ TELEGRAM (твой тестовый канал)
 TG_CHANNEL_NAME = "dsdedmak0193" 
 TG_URL = f"https://t.me/s/{TG_CHANNEL_NAME}"
 
 ORANGE = 0xFF8C00
 
-# ID каналов
-TOP_CHANNEL_ID = 1422240878105198734 
-UPDATE_CHANNEL_ID = 1422240878105198734 # Сюда будут прилетать посты из ТГК
+# Твой ID канала
+CHANNEL_ID = 1422240878105198734 
 
 # Файл для хранения ID последнего поста
 DATA_DIR = os.getenv("DATA_DIR", ".")
@@ -162,7 +160,7 @@ def fetch_all_tg_posts():
         
         posts = []
         for msg in messages:
-            post_id_str = msg.get('data-post') # Например, "dsdedmak0193/5"
+            post_id_str = msg.get('data-post')
             if not post_id_str:
                 continue
             
@@ -188,7 +186,7 @@ def fetch_all_tg_posts():
 
 @tasks.loop(minutes=30)
 async def check_updates_task():
-    channel = bot.get_channel(UPDATE_CHANNEL_ID)
+    channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
 
@@ -198,16 +196,14 @@ async def check_updates_task():
 
     last_id = get_last_saved_id()
 
-    # Если это первый запуск (файла нет), просто запоминаем последний пост
     if last_id == 0:
         max_id = max(p['id'] for p in posts)
         save_last_id(max_id)
         logging.info(f"Первый запуск парсера. Запомнили ID поста: {max_id}")
         return
 
-    # Отбираем только новые посты
     new_posts = [p for p in posts if p['id'] > last_id]
-    new_posts.sort(key=lambda x: x['id']) # Сортируем от старых к новым
+    new_posts.sort(key=lambda x: x['id'])
 
     for post in new_posts:
         embed = discord.Embed(
@@ -221,11 +217,10 @@ async def check_updates_task():
         
         try:
             await channel.send(embed=embed)
-            await asyncio.sleep(2) # Пауза, чтобы Discord не выдал бан за спам
+            await asyncio.sleep(2)
         except Exception as e:
             logging.error(f"Не удалось отправить пост {post['id']}: {e}")
 
-    # Запоминаем ID самого нового поста
     if new_posts:
         save_last_id(new_posts[-1]['id'])
         logging.info(f"Отправлено {len(new_posts)} новых постов. Новый last_id: {new_posts[-1]['id']}")
@@ -255,7 +250,7 @@ async def send_top_to_channel(channel):
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
-    channel = bot.get_channel(TOP_CHANNEL_ID)
+    channel = bot.get_channel(CHANNEL_ID)
     if channel: await send_top_to_channel(channel)
 
 # ==============================
@@ -295,12 +290,11 @@ async def top_now(ctx):
     await send_top_to_channel(ctx.channel)
     await msg.delete()
 
-# КОМАНДА ДЛЯ ПРИНУДИТЕЛЬНОЙ ПРОВЕРКИ ТГК (чтобы не ждать 30 минут)
 @bot.command(name="checktg")
 async def checktg_now(ctx):
     await ctx.send("🔍 Проверяю Telegram-канал...")
     await check_updates_task()
-    await ctx.send("✅ Проверка завершена! Если были новые посты, я их скинул.")
+    await ctx.send("✅ Проверка завершена!")
 
 # ==============================
 # START
