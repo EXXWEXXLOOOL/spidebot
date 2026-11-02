@@ -1,47 +1,300 @@
+
 import discord
 from discord.ext import commands
 from curl_cffi import requests
+
+import asyncio
 import urllib.parse
 import os
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ==============================
+# CONFIGURATION
+# ==============================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
 
 RAW_COOKIE = os.getenv("SPIDE_COOKIE")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
 COOKIE_STRING = RAW_COOKIE.strip() if RAW_COOKIE else None
 
+SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
+SPIDE_SEARCH = "https://web.spide.ru/search"
+
+ORANGE = 0xFF8C00
+
+
+# ==============================
+# TRACK VIEW
+# ==============================
+
 class TrackView(discord.ui.View):
+
     def __init__(self, url):
-        super().__init__()
-        self.add_item(discord.ui.Button(label="Слушать в Spide", url=url, emoji="🎵", style=discord.ButtonStyle.link))
+        super().__init__(timeout=180)
+
+        self.add_item(
+            discord.ui.Button(
+                label="Слушать в Spide",
+                emoji="▶",
+                style=discord.ButtonStyle.link,
+                url=url
+            )
+        )
+
+
+# ==============================
+# HELPERS
+# ==============================
+
+def format_duration(duration_ms):
+
+    try:
+        duration_ms = int(duration_ms or 0)
+    except (ValueError, TypeError):
+        duration_ms = 0
+
+    minutes = duration_ms // 60000
+    seconds = (duration_ms % 60000) // 1000
+
+    return f"{minutes}:{seconds:02d}"
+
+
+def format_artists(artists):
+
+    if not isinstance(artists, list):
+        return "Неизвестный исполнитель"
+
+    names = []
+
+    for artist in artists:
+        if isinstance(artist, dict):
+            name = artist.get("name")
+        elif isinstance(artist, str):
+            name = artist
+        else:
+            name = None
+
+        if name:
+            names.append(str(name))
+
+    return ", ".join(names) if names else "Неизвестный исполнитель"
+
+
+def get_album_name(album):
+
+    if isinstance(album, dict):
+        return album.get("title") or album.get("name") or "Сингл"
+
+    if isinstance(album, str):
+        return album or "Сингл"
+
+    return "Сингл"
+
+
+# ==============================
+# API REQUEST
+# ==============================
+
+def search_spide(query, headers):
+
+    encoded_query = urllib.parse.quote(query, safe="")
+
+    url = (
+        f"{SPIDE_API}?q={encoded_query}"
+        "&type=all&limit=10"
+    )
+
+    response = requests.get(
+        url,
+        headers=headers,
+        impersonate="chrome",
+        timeout=20
+    )
+
+    logging.info(
+        "Spide response: HTTP %s",
+        response.status_code
+    )
+
+    data = response.json()
+
+    if not isinstance(data, dict):
+        raise ValueError("Неожиданный формат ответа Spide")
+
+    if "error" in data:
+        raise ValueError(str(data["error"]))
+
+    if response.status_code >= 400:
+        raise ValueError(
+            f"Spide вернул HTTP {response.status_code}"
+        )
+
+    return data
+
+
+# ==============================
+# EMBED DESIGN
+# ==============================
+
+def create_track_embed(track, ctx, query):
+
+    title = str(
+        track.get("title") or "Неизвестный трек"
+    )
+
+    artists = format_artists(
+        track.get("artists", [])
+    )
+
+    album_name = get_album_name(
+        track.get("album")
+    )
+
+    duration = format_duration(
+        track.get("durationMs", 0)
+    )
+
+    cover = track.get("cover")
+
+    if isinstance(cover, str) and not cover.startswith(
+        ("https://", "http://")
+    ):
+        cover = None
+
+    track_id = track.get("id")
+
+    if track_id:
+        track_url = (
+            "https://web.spide.ru/track/"
+            + urllib.parse.quote(str(track_id), safe="")
+        )
+    else:
+        track_url = SPIDE_SEARCH
+
+    # Main embed
+    embed = discord.Embed(
+        title=title[:256],
+        url=track_url,
+        description=f"**{artists[:1000]}**",
+        color=ORANGE,
+        timestamp=discord.utils.utcnow()
+    )
+
+    # Header
+    embed.set_author(
+        name="SPIDE MUSIC  /  TRACK"
+    )
+
+    # Album cover
+    if cover:
+        embed.set_thumbnail(url=cover)
+
+    # Album information
+    embed.add_field(
+        name="АЛЬБОМ",
+        value=f"*{album_name[:1024]}*",
+        inline=True
+    )
+
+    # Track duration
+    embed.add_field(
+        name="ДЛИТЕЛЬНОСТЬ",
+        value=f"`{duration}`",
+        inline=True
+    )
+
+    # Search query
+    embed.add_field(
+        name="ПОИСКОВЫЙ ЗАПРОС",
+        value=f"`{query[:100]}`",
+        inline=False
+    )
+
+    # Footer
+    avatar = (
+        ctx.author.display_avatar.url
+        if ctx.author.display_avatar
+        else None
+    )
+
+    embed.set_footer(
+        text=f"SPIDE MUSIC  •  Запросил {ctx.author.display_name}",
+        icon_url=avatar
+    )
+
+    return embed, track_url
+
+
+# ==============================
+# EVENTS
+# ==============================
 
 @bot.event
 async def on_ready():
-    logging.info(f'Бот {bot.user} успешно запущен!')
 
-@bot.command(name='search')
+    logging.info(
+        "Бот %s успешно запущен!",
+        bot.user
+    )
+
+
+# ==============================
+# SEARCH COMMAND
+# ==============================
+
+@bot.command(name="search")
 async def search(ctx, *, query: str = None):
-    if not query:
-        await ctx.send("❌ Напишите название трека. Пример: `!search Despacito`")
+
+    if not query or not query.strip():
+
+        await ctx.send(
+            "Напиши название трека.\n"
+            "Пример: `!search Despacito`"
+        )
+
         return
 
     if not COOKIE_STRING:
-        await ctx.send("❌ Ошибка: Куки Spide не настроены на сервере.")
+
+        await ctx.send(
+            "Ошибка: Cookie Spide не настроены."
+        )
+
         return
 
-    msg = await ctx.send("🔎 Ищу...")
-    logging.info(f"Пользователь {ctx.author.name} ищет: {query}")
+    query = query.strip()
 
-    encoded_query = urllib.parse.quote(query, safe='')
-    # ИЗМЕНЕНО: limit=10 вместо 1 (как в рабочем curl)
-    url = f"https://web.spide.ru/api/v1/spotify/search?q={encoded_query}&type=all&limit=10"
+    if len(query) > 200:
 
-    # ИЗМЕНЕНО: Добавлены ВСЕ заголовки из твоего рабочего curl
+        await ctx.send(
+            "Слишком длинный поисковый запрос."
+        )
+
+        return
+
+    msg = await ctx.send(
+        "🔎 Ищу треки в Spide..."
+    )
+
+    logging.info(
+        "Пользователь %s ищет: %s",
+        ctx.author.name,
+        query
+    )
+
     headers = {
         "accept": "application/json",
         "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -61,53 +314,71 @@ async def search(ctx, *, query: str = None):
     }
 
     try:
-        response = requests.get(url, headers=headers, impersonate="chrome")
-        logging.info(f"Ответ Spide: Статус {response.status_code}.")
-        data = response.json()
-        
-        if "error" in data:
-            await msg.edit(content=f"❌ Ошибка Spide: `{data['error']}`. Куки устарели.")
+
+        data = await asyncio.to_thread(
+            search_spide,
+            query,
+            headers
+        )
+
+        tracks = data.get("tracks", [])
+
+        if not isinstance(tracks, list):
+            tracks = []
+
+        if not tracks:
+
+            await msg.edit(
+                content=f"По запросу **{query}** ничего не найдено."
+            )
+
             return
-            
+
+        track = tracks[0]
+
+        if not isinstance(track, dict):
+            raise ValueError("Некорректные данные трека")
+
+        embed, track_url = create_track_embed(
+            track,
+            ctx,
+            query
+        )
+
+        view = TrackView(track_url)
+
+        await msg.edit(
+            content=None,
+            embed=embed,
+            view=view
+        )
+
+        logging.info(
+            "Найден трек: %s — %s",
+            format_artists(track.get("artists", [])),
+            track.get("title")
+        )
+
     except Exception as e:
-        logging.error(f"Ошибка соединения: {e}")
-        await msg.edit(content=f"❌ Ошибка соединения: {e}")
-        return
 
-    tracks = data.get("tracks", [])
-    
-    if not tracks:
-        await msg.edit(content=f"🔎 По запросу **{query}** ничего не найдено.")
-        return
-    
-    track = tracks[0]
-    title = track.get("title", "Неизвестно")
-    cover = track.get("cover")
-    duration_ms = track.get("durationMs", 0)
-    track_id = track.get("id")
-    
-    artists = ", ".join([artist.get("name", "") for artist in track.get("artists", [])])
-    album_name = track.get("album", {}).get("title", "Сингл")
-    
-    minutes = duration_ms // 60000
-    seconds = (duration_ms % 60000) // 1000
-    duration_str = f"{minutes}:{seconds:02d}"
-    
-    track_url = f"https://web.spide.ru/track/{track_id}"
+        logging.exception("Ошибка поиска Spide")
 
-    embed = discord.Embed(title=f"🎵 {title}", url=track_url, color=0xFF8C00)
-    if cover:
-        embed.set_thumbnail(url=cover)
-        
-    embed.add_field(name="👤 Исполнитель", value=f"**{artists}**", inline=True)
-    embed.add_field(name="💿 Альбом", value=f"*{album_name}*", inline=True)
-    embed.add_field(name="⏱️ Длительность", value=f"`{duration_str}`", inline=True)
-    embed.set_footer(text=f"Spide Music | Запросил {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+        await msg.edit(
+            content=f"Ошибка поиска: `{str(e)[:500]}`",
+            embed=None,
+            view=None
+        )
 
-    view = TrackView(track_url)
-    await msg.edit(content=None, embed=embed, view=view)
 
-if DISCORD_TOKEN:
-    bot.run(DISCORD_TOKEN)
-else:
-    logging.error("ОШИБКА: Не задан DISCORD_TOKEN!")
+# ==============================
+# START
+# ==============================
+
+if __name__ == "__main__":
+
+    if DISCORD_TOKEN:
+        bot.run(DISCORD_TOKEN)
+    else:
+        logging.error(
+            "ОШИБКА: Не задан DISCORD_TOKEN!"
+        )
