@@ -79,14 +79,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spide.ru/search"
-# Эндпоинт для топ-10 (без limit, чтобы сервер не капризничал)
 SPIDE_TOP_LISTENERS = "https://web.spide.ru/api/v1/tops/listeners?tz=Europe/Moscow"
 
 ORANGE = 0xFF8C00
 
-# 🚨 ID КАНАЛОВ DISCORD
-TOP_CHANNEL_ID = 1566895795654107217      # Канал для ежедневного авто-топа (03:22)
-UPDATE_CHANNEL_ID = 1566767775001616506   # Канал для постов из Telegram
+TOP_CHANNEL_ID = 1566895795654107217      
+UPDATE_CHANNEL_ID = 1566767775001616506   
 
 # ==============================
 # WEB SERVER (FLASK)
@@ -304,36 +302,37 @@ async def force_top(target_channel):
     global app_config
     app_config = load_config()
     cookie = app_config.get("SPIDE_COOKIE", "")
-    if not cookie or not target_channel: return
+    
+    if not cookie:
+        await target_channel.send("❌ Ошибка: Куки Spide не заданы. Обновите их в веб-панели.")
+        return False
+    if not target_channel: 
+        return False
 
     headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
     
     try:
         response = await asyncio.to_thread(requests.get, SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
-        response.raise_for_status()
+        
+        if response.status_code != 200:
+            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Скорее всего, протухли куки."
+            logging.error(err_msg)
+            await target_channel.send(err_msg)
+            return False
+
         data = response.json()
         
-        # 🕵️‍♂️ УМНЫЙ ПАРСИНГ: Пытаемся найти список в любом месте ответа
-        leaders = []
-        if isinstance(data, list):
-            leaders = data
-        elif isinstance(data, dict):
-            leaders = data.get("leaders") or data.get("listeners") or data.get("items") or []
-            if not leaders:
-                for key, val in data.items():
-                    if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                        if "displayName" in val[0] or "username" in val[0]:
-                            leaders = val
-                            break
-                            
+        # 🎯 ПАРСИНГ ТОЧНО ПО ТВОЕМУ ЛОГУ
+        leaders = data.get("rows", []) # <-- Вот тут был затык!
+        
         if not leaders:
             logging.error(f"Не удалось найти список слушателей. Ответ: {str(data)[:300]}")
-            await target_channel.send("⚠️ Ошибка: API Spide вернул данные в неизвестном формате. Смотри логи на сайте.")
-            return
+            await target_channel.send("⚠️ Ошибка: API Spide вернул данные в неизвестном формате.")
+            return False
 
         top_10 = leaders[:10]
-        total = data.get("total", "Неизвестно") if isinstance(data, dict) else "Неизвестно"
-        date_str = data.get("day", "Сегодня") if isinstance(data, dict) else "Сегодня"
+        total = data.get("total", "Неизвестно")
+        date_str = data.get("day", "Сегодня")
 
         embed = discord.Embed(
             title="🏆 Топ-10 слушателей Spide", 
@@ -343,20 +342,24 @@ async def force_top(target_channel):
         )
 
         medals = ["🥇", "🥈", "🥉"]
-        for i, leader in enumerate(top_10[:3]):
-            name = leader.get("displayName") or leader.get("username") or leader.get("name") or "Неизвестно"
-            score = leader.get("score") or leader.get("minutes") or leader.get("listenedMs") or leader.get("total") or 0
+        for i, row in enumerate(top_10[:3]):
+            # Достаем юзера из вложенного объекта
+            user = row.get("user", {})
+            name = user.get("displayName") or user.get("username") or "Неизвестно"
+            score = row.get("score", 0) # Берем из корня строки
+            
             embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**\n`{score:,}` мин".replace(",", " "), inline=True)
             
-            photo = leader.get("photoUrl") or leader.get("avatar") or leader.get("image")
+            photo = user.get("photoUrl")
             if i == 0 and photo: 
                 embed.set_thumbnail(url=photo)
 
         if len(top_10) > 3:
             other_places = ""
-            for i, leader in enumerate(top_10[3:], 4):
-                name = leader.get("displayName") or leader.get("username") or leader.get("name") or "Неизвестно"
-                score = leader.get("score") or leader.get("minutes") or leader.get("listenedMs") or leader.get("total") or 0
+            for i, row in enumerate(top_10[3:], 4):
+                user = row.get("user", {})
+                name = user.get("displayName") or user.get("username") or "Неизвестно"
+                score = row.get("score", 0)
                 other_places += f"**{i}.** {name} — `{score:,}` мин\n".replace(",", " ")
             
             embed.add_field(name="Остальные", value=other_places, inline=False)
@@ -366,9 +369,13 @@ async def force_top(target_channel):
         
         if target_channel.id == TOP_CHANNEL_ID:
             logging.info("Топ-10 успешно отправлен.")
+        return True
 
     except Exception as e:
-        logging.error(f"Ошибка получения топа: {e}")
+        err_msg = f"❌ Ошибка получения топа: `{e}`"
+        logging.error(err_msg)
+        await target_channel.send(err_msg)
+        return False
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
@@ -429,8 +436,12 @@ async def search(ctx, *, query: str = None):
 @bot.command(name="top")
 async def top_now(ctx):
     msg = await ctx.send("⏳ Собираю топ-10...")
-    await force_top(ctx.channel)
-    await msg.delete()
+    success = await force_top(ctx.channel)
+    
+    if success:
+        await msg.delete()
+    else:
+        await msg.edit(content="❌ Не удалось получить топ. Проверьте логи на сайте.")
 
 @bot.command(name="checktg")
 async def checktg_now(ctx):
