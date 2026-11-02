@@ -42,10 +42,10 @@ TG_URL = f"https://t.me/s/{TG_CHANNEL_NAME}"
 
 ORANGE = 0xFF8C00
 
-# Твой ID канала Discord, куда прилетают топы и новости
-CHANNEL_ID = 1422240878105198734 
+# 🚨 ID КАНАЛОВ DISCORD
+TOP_CHANNEL_ID = 1422240878105198734      # Канал для ежедневного топа (03:22)
+UPDATE_CHANNEL_ID = 1566767775001616506   # Канал для постов из Telegram (новый ID)
 
-# Файл для хранения ID последнего поста из ТГК
 DATA_DIR = os.getenv("DATA_DIR", ".")
 LAST_UPDATE_FILE = os.path.join(DATA_DIR, "last_update_id.txt")
 
@@ -144,7 +144,6 @@ def fetch_all_tg_posts():
             text_div = msg.find('div', class_='tgme_widget_message_text')
             text = text_div.get_text(separator='\n', strip=True) if text_div else ""
             
-            # Парсим картинку из стилей Telegram
             image_url = None
             photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
             if photo_wrap and 'style' in photo_wrap.attrs:
@@ -161,12 +160,13 @@ def fetch_all_tg_posts():
         return []
 
 # ==============================
-# TASKS (TOP & NEWS)
+# TASKS
 # ==============================
 
 @tasks.loop(minutes=10)
 async def check_updates_task():
-    channel = bot.get_channel(CHANNEL_ID)
+    # 🚨 ИЗМЕНЕНО: Теперь берет UPDATE_CHANNEL_ID (новый канал)
+    channel = bot.get_channel(UPDATE_CHANNEL_ID)
     if not channel: return
 
     posts = await asyncio.to_thread(fetch_all_tg_posts)
@@ -185,8 +185,6 @@ async def check_updates_task():
 
     for post in new_posts:
         raw_text = post["text"][:4000] if post["text"] else "*Пост с изображением*"
-        
-        # Делаем текст цитатой для выделения
         quoted_text = "\n".join(f"> {line}" for line in raw_text.split("\n"))
 
         embed = discord.Embed(
@@ -236,7 +234,8 @@ async def send_top_to_channel(channel):
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
-    channel = bot.get_channel(CHANNEL_ID)
+    # 🚨 Топ останется в старом канале (TOP_CHANNEL_ID)
+    channel = bot.get_channel(TOP_CHANNEL_ID)
     if channel: await send_top_to_channel(channel)
 
 # ==============================
@@ -278,7 +277,7 @@ async def top_now(ctx):
 
 @bot.command(name="checktg")
 async def checktg_now(ctx):
-    await ctx.send("🔍 Проверяю Telegram-канал...")
+    await ctx.send(f"🔍 Проверяю Telegram-канал... (посты уйдут в <#{UPDATE_CHANNEL_ID}>)")
     await check_updates_task()
     await ctx.send("✅ Проверка завершена!")
 
