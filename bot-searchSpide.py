@@ -110,11 +110,13 @@ def get_album_name(album):
 
 def search_spide(query, headers):
 
-    encoded_query = urllib.parse.quote(query, safe="")
-
     url = (
-        f"{SPIDE_API}?q={encoded_query}"
-        "&type=all&limit=10"
+        f"{SPIDE_API}?"
+        f"{urllib.parse.urlencode({
+            'q': query,
+            'type': 'all',
+            'limit': 10
+        })}"
     )
 
     response = requests.get(
@@ -129,18 +131,15 @@ def search_spide(query, headers):
         response.status_code
     )
 
+    response.raise_for_status()
+
     data = response.json()
 
     if not isinstance(data, dict):
         raise ValueError("Неожиданный формат ответа Spide")
 
-    if "error" in data:
+    if data.get("error"):
         raise ValueError(str(data["error"]))
-
-    if response.status_code >= 400:
-        raise ValueError(
-            f"Spide вернул HTTP {response.status_code}"
-        )
 
     return data
 
@@ -169,22 +168,27 @@ def create_track_embed(track, ctx, query):
 
     cover = track.get("cover")
 
-    if isinstance(cover, str) and not cover.startswith(
+    if not isinstance(cover, str) or not cover.startswith(
         ("https://", "http://")
     ):
         cover = None
 
-    track_id = track.get("id")
+    # ==========================
+    # SEARCH LINK
+    # ==========================
 
-    if track_id:
-        track_url = (
-            "https://web.spide.ru/track/"
-            + urllib.parse.quote(str(track_id), safe="")
-        )
-    else:
-        track_url = SPIDE_SEARCH
+    # Ищем по названию и исполнителю
+    search_query = f"{title} {artists}".strip()
 
-    # Main embed
+    track_url = (
+        f"{SPIDE_SEARCH}?"
+        f"{urllib.parse.urlencode({'q': search_query})}"
+    )
+
+    # ==========================
+    # EMBED
+    # ==========================
+
     embed = discord.Embed(
         title=title[:256],
         url=track_url,
@@ -193,7 +197,6 @@ def create_track_embed(track, ctx, query):
         timestamp=discord.utils.utcnow()
     )
 
-    # Header
     embed.set_author(
         name="SPIDE MUSIC  /  TRACK"
     )
@@ -202,14 +205,14 @@ def create_track_embed(track, ctx, query):
     if cover:
         embed.set_thumbnail(url=cover)
 
-    # Album information
+    # Album
     embed.add_field(
         name="АЛЬБОМ",
         value=f"*{album_name[:1024]}*",
         inline=True
     )
 
-    # Track duration
+    # Duration
     embed.add_field(
         name="ДЛИТЕЛЬНОСТЬ",
         value=f"`{duration}`",
@@ -224,11 +227,7 @@ def create_track_embed(track, ctx, query):
     )
 
     # Footer
-    avatar = (
-        ctx.author.display_avatar.url
-        if ctx.author.display_avatar
-        else None
-    )
+    avatar = ctx.author.display_avatar.url
 
     embed.set_footer(
         text=f"SPIDE MUSIC  •  Запросил {ctx.author.display_name}",
