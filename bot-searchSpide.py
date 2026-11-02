@@ -88,7 +88,7 @@ ORANGE = 0xFF8C00
 # 🚨 ID КАНАЛОВ
 TOP_CHANNEL_ID = 1566895795654107217
 UPDATE_CHANNEL_ID = 1566767775001616506
-WELCOME_CHANNEL_ID = 1566767398588125194 # 🚨 ТВОЙ НОВЫЙ ID ДЛЯ ПРИВЕТСТВИЙ
+WELCOME_CHANNEL_ID = 1566767398588125194 # Твой новый ID для приветствий
 
 # 🚨 ГЛОБАЛЬНАЯ ПРОВЕРКА ПРАВ
 @bot.check
@@ -120,17 +120,30 @@ class RoleSelectView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def handle_role(self, interaction: discord.Interaction, role_name: str):
+        # Даем боту 15 секунд на выполнение (защита от таймаута)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return # Если взаимодействие уже истекло, просто выходим
+
         role = discord.utils.get(interaction.guild.roles, name=role_name)
         if not role:
-            await interaction.response.send_message(f"❌ Роль **{role_name}** не найдена.", ephemeral=True)
+            await interaction.followup.send(f"❌ Роль **{role_name}** не найдена на сервере. Создайте её.", ephemeral=True)
             return
 
-        if role in interaction.user.roles:
-            await interaction.user.remove_roles(role)
-            await interaction.response.send_message(f"✅ Роль **{role_name}** снята.", ephemeral=True)
-        else:
-            await interaction.user.add_roles(role)
-            await interaction.response.send_message(f"✅ Роль **{role_name}** выдана!", ephemeral=True)
+        try:
+            if role in interaction.user.roles:
+                await interaction.user.remove_roles(role)
+                await interaction.followup.send(f"✅ Роль **{role_name}** снята.", ephemeral=True)
+            else:
+                await interaction.user.add_roles(role)
+                await interaction.followup.send(f"✅ Роль **{role_name}** выдана!", ephemeral=True)
+        except discord.Forbidden:
+            logging.error(f"Ошибка прав при выдаче роли {role_name} пользователю {interaction.user.name}")
+            await interaction.followup.send("❌ **Ошибка прав!** У бота нет права `Управлять ролями` или его роль стоит ниже, чем выдаваемая. Сообщите админу.", ephemeral=True)
+        except Exception as e:
+            logging.error(f"Ошибка выдачи роли: {e}")
+            await interaction.followup.send(f"❌ Произошла ошибка: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Android", style=discord.ButtonStyle.primary, emoji="🤖", custom_id="role_android")
     async def android_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -544,27 +557,61 @@ async def setup_roles(ctx):
 @bot.command(name='rules')
 async def rules(ctx):
     await ctx.message.delete()
+    
     embed = discord.Embed(
         title="📜 ПРАВИЛА СООБЩЕСТВА SPIDE",
-        description="Добро пожаловать! Для комфортного общения на сервере просим ознакомиться с основными правилами.",
+        description="Для поддержания дружелюбной и комфортной атмосферы на сервере, пожалуйста, ознакомьтесь с нашими правилами. Незнание правил не освобождает от ответственности.",
         color=ORANGE,
         timestamp=discord.utils.utcnow()
     )
+    
+    # Картинка в правом верхнем углу
+    embed.set_thumbnail(url="https://i.ibb.co/FLxXZwvv/199d4da6-4399-4d85-a447-7ed7c90129bf.png")
+
+    # Блок 1: Правила 1-3
     embed.add_field(
-        name="⚖️ Основы общения",
-        value="**01. Уважение**\nЗапрещены травля, угрозы, дискриминация.\n\n**02. Без токсичности**\nКонструктивные споры приветствуются.\n\n**03. Против спама**\nБез флуда и массовых упоминаний.",
+        name="⚖️ Общие положения",
+        value=(
+            "**01. Уважение к участникам**\n"
+            "Относись к другим участникам с уважением. Запрещены травля, угрозы, дискриминация, намеренные провокации и преследование других пользователей.\n\n"
+            "**02. Общение без токсичности**\n"
+            "Не устраивай конфликты ради конфликтов, не провоцируй ссоры и не переходи на личности. Конструктивные споры и разные мнения приветствуются.\n\n"
+            "**03. Запрет на спам**\n"
+            "Не засоряй чаты повторяющимися сообщениями, бессмысленными символами, чрезмерными упоминаниями, рекламой и нежелательными ссылками. Флуд допускается только в предназначенных для него каналах."
+        ),
         inline=False
     )
+
+    # Блок 2: Правила 4-6
     embed.add_field(
         name="📂 Контент и порядок",
-        value="**04. Реклама**\nТолько с разрешения администрации.\n\n**05. Материалы**\nЗапрещены шок-контент и чужие личные данные.\n\n**06. Тематика**\nСоблюдай тематику каналов.",
+        value=(
+            "**04. Реклама и самопродвижение**\n"
+            "Реклама сторонних проектов, серверов, каналов и услуг разрешена только с согласия администрации. Не используй личные сообщения участников для массовой рассылки рекламы.\n\n"
+            "**05. Контент и материалы**\n"
+            "Запрещены вредоносные файлы и ссылки, шокирующий контент, а также материалы, нарушающие законодательство или правила Discord. Не публикуй чужую личную информацию без согласия её владельца.\n\n"
+            "**06. Использование каналов**\n"
+            "Соблюдай тематику каналов. Технические вопросы, музыкальные обсуждения, предложения и обычное общение должны находиться в соответствующих разделах."
+        ),
         inline=False
     )
+
+    # Блок 3: Правила 7-10
     embed.add_field(
         name="🎙️ Голос и Администрация",
-        value="**07. Голос**\nНе мешай другим.\n\n**08. Обход ограничений**\nЗапрещен.\n\n**09. Жалобы**\nСпокойно и по делу.\n\n**10. Решения админов**\nОбязательны к исполнению.",
+        value=(
+            "**07. Голосовые каналы**\n"
+            "Не мешай другим участникам общаться: избегай намеренного шума, криков, включения громких звуков и использования звуковых эффектов для помех окружающим.\n\n"
+            "**08. Запрет на обход ограничений**\n"
+            "Запрещено обходить блокировки и наказания с помощью дополнительных аккаунтов, а также намеренно мешать работе сервера или его ботов.\n\n"
+            "**09. Общение с администрацией**\n"
+            "Не выдавай себя за представителя команды Spide. Не злоупотребляй жалобами и обращениями. Если не согласен с действиями модератора, обратись к администрации спокойно и с объяснением ситуации.\n\n"
+            "**10. Решения администрации**\n"
+            "Администрация вправе удалять сообщения и применять меры наказания за нарушения правил. Степень наказания определяется с учётом тяжести нарушения, его последствий и повторяемости."
+        ),
         inline=False
     )
+
     embed.set_footer(text="Spide Music | Пожалуйста, соблюдайте правила", icon_url=ctx.author.display_avatar.url)
     await ctx.send(embed=embed)
 
