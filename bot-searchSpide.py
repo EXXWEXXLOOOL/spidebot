@@ -8,7 +8,7 @@ import urllib.parse
 import os
 import logging
 import datetime
-import re  # <--- ДОБАВЛЕНО для поиска картинок
+import re
 
 # ==============================
 # CONFIGURATION
@@ -36,12 +36,16 @@ SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spide.ru/search"
 SPIDE_TOP_SUMMARY = "https://web.spide.ru/api/v1/tops/summary?tz=Europe/Moscow"
 
+# НАСТРОЙКИ TELEGRAM (твой тестовый канал)
 TG_CHANNEL_NAME = "dsdedmak0193" 
 TG_URL = f"https://t.me/s/{TG_CHANNEL_NAME}"
 
 ORANGE = 0xFF8C00
+
+# Твой ID канала Discord, куда прилетают топы и новости
 CHANNEL_ID = 1422240878105198734 
 
+# Файл для хранения ID последнего поста из ТГК
 DATA_DIR = os.getenv("DATA_DIR", ".")
 LAST_UPDATE_FILE = os.path.join(DATA_DIR, "last_update_id.txt")
 
@@ -140,18 +144,14 @@ def fetch_all_tg_posts():
             text_div = msg.find('div', class_='tgme_widget_message_text')
             text = text_div.get_text(separator='\n', strip=True) if text_div else ""
             
-            # === ПАРСИНГ КАРТИНКИ ===
+            # Парсим картинку из стилей Telegram
             image_url = None
-            # Telegram хранит картинки в стилях тега <a class="tgme_widget_message_photo_wrap">
             photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
             if photo_wrap and 'style' in photo_wrap.attrs:
-                style = photo_wrap['style']
-                # Ищем ссылку внутри background-image: url('https://...')
-                match = re.search(r"url\('([^']+)'\)", style)
+                match = re.search(r"url\('([^']+)'\)", photo_wrap['style'])
                 if match:
                     image_url = match.group(1)
 
-            # Добавляем пост, если есть текст ИЛИ картинка
             if text or image_url:
                 posts.append({"id": post_id, "text": text, "image_url": image_url})
                 
@@ -161,7 +161,7 @@ def fetch_all_tg_posts():
         return []
 
 # ==============================
-# TASKS
+# TASKS (TOP & NEWS)
 # ==============================
 
 @tasks.loop(minutes=10)
@@ -184,17 +184,18 @@ async def check_updates_task():
     new_posts.sort(key=lambda x: x['id'])
 
     for post in new_posts:
-        # Если текста нет, но есть картинка, ставим текст-заглушку
-        desc_text = post["text"][:4000] if post["text"] else "*Пост с изображением*"
+        raw_text = post["text"][:4000] if post["text"] else "*Пост с изображением*"
         
+        # Делаем текст цитатой для выделения
+        quoted_text = "\n".join(f"> {line}" for line in raw_text.split("\n"))
+
         embed = discord.Embed(
             title="📢 Новый пост в Telegram-канале",
-            description=desc_text,
+            description=quoted_text,
             color=ORANGE,
             timestamp=discord.utils.utcnow()
         )
         
-        # === ДОБАВЛЕНИЕ КАРТИНКИ В EMBED ===
         if post.get("image_url"):
             embed.set_image(url=post["image_url"])
 
@@ -210,10 +211,6 @@ async def check_updates_task():
     if new_posts:
         save_last_id(new_posts[-1]['id'])
         logging.info(f"Отправлено {len(new_posts)} новых постов.")
-
-# ==============================
-# (ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ)
-# ==============================
 
 async def send_top_to_channel(channel):
     if not COOKIE_STRING: return
@@ -241,6 +238,10 @@ async def send_top_to_channel(channel):
 async def daily_top_task():
     channel = bot.get_channel(CHANNEL_ID)
     if channel: await send_top_to_channel(channel)
+
+# ==============================
+# EVENTS & COMMANDS
+# ==============================
 
 @bot.event
 async def on_ready():
@@ -280,6 +281,10 @@ async def checktg_now(ctx):
     await ctx.send("🔍 Проверяю Telegram-канал...")
     await check_updates_task()
     await ctx.send("✅ Проверка завершена!")
+
+# ==============================
+# START
+# ==============================
 
 if __name__ == "__main__":
     if DISCORD_TOKEN:
