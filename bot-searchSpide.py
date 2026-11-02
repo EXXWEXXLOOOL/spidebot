@@ -38,12 +38,25 @@ async def search(ctx, *, query: str = None):
     logging.info(f"Пользователь {ctx.author.name} ищет: {query}")
 
     encoded_query = urllib.parse.quote(query, safe='')
-    url = f"https://web.spide.ru/api/v1/spotify/search?q={encoded_query}&type=all&limit=1"
+    # ИЗМЕНЕНО: limit=10 вместо 1 (как в рабочем curl)
+    url = f"https://web.spide.ru/api/v1/spotify/search?q={encoded_query}&type=all&limit=10"
 
+    # ИЗМЕНЕНО: Добавлены ВСЕ заголовки из твоего рабочего curl
     headers = {
         "accept": "application/json",
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
         "referer": "https://web.spide.ru/search",
+        "sec-ch-ua": '"Not:A-Brand";v="8", "Chromium";v="156", "Google Chrome";v="156"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        "x-audio-fallback": "2",
         "Cookie": COOKIE_STRING
     }
 
@@ -63,59 +76,36 @@ async def search(ctx, *, query: str = None):
 
     tracks = data.get("tracks", [])
     
-    # Если треки есть — показываем трек
-    if tracks:
-        track = tracks[0]
-        title = track.get("title", "Неизвестно")
-        cover = track.get("cover")
-        duration_ms = track.get("durationMs", 0)
-        track_id = track.get("id")
-        
-        artists = ", ".join([artist.get("name", "") for artist in track.get("artists", [])])
-        album_name = track.get("album", {}).get("title", "Сингл")
-        
-        minutes = duration_ms // 60000
-        seconds = (duration_ms % 60000) // 1000
-        duration_str = f"{minutes}:{seconds:02d}"
-        track_url = f"https://web.spide.ru/track/{track_id}"
-
-        embed = discord.Embed(title=f"🎵 {title}", url=track_url, color=0xFF8C00)
-        if cover:
-            embed.set_thumbnail(url=cover)
-            
-        embed.add_field(name="👤 Исполнитель", value=f"**{artists}**", inline=True)
-        embed.add_field(name="💿 Альбом", value=f"*{album_name}*", inline=True)
-        embed.add_field(name="⏱️ Длительность", value=f"`{duration_str}`", inline=True)
-        embed.set_footer(text=f"Spide Music | Запросил {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-        view = TrackView(track_url)
-        await msg.edit(content=None, embed=embed, view=view)
+    if not tracks:
+        await msg.edit(content=f"🔎 По запросу **{query}** ничего не найдено.")
         return
+    
+    track = tracks[0]
+    title = track.get("title", "Неизвестно")
+    cover = track.get("cover")
+    duration_ms = track.get("durationMs", 0)
+    track_id = track.get("id")
+    
+    artists = ", ".join([artist.get("name", "") for artist in track.get("artists", [])])
+    album_name = track.get("album", {}).get("title", "Сингл")
+    
+    minutes = duration_ms // 60000
+    seconds = (duration_ms % 60000) // 1000
+    duration_str = f"{minutes}:{seconds:02d}"
+    
+    track_url = f"https://web.spide.ru/track/{track_id}"
 
-    # Если треков нет, но есть артисты — показываем артиста
-    artists_list = data.get("artists", [])
-    if artists_list:
-        artist = artists_list[0]
-        artist_name = artist.get("name", "Неизвестный артист")
-        artist_image = artist.get("image")
-        artist_id = artist.get("id")
-        artist_url = f"https://web.spide.ru/artist/{artist_id}"
+    embed = discord.Embed(title=f"🎵 {title}", url=track_url, color=0xFF8C00)
+    if cover:
+        embed.set_thumbnail(url=cover)
+        
+    embed.add_field(name="👤 Исполнитель", value=f"**{artists}**", inline=True)
+    embed.add_field(name="💿 Альбом", value=f"*{album_name}*", inline=True)
+    embed.add_field(name="⏱️ Длительность", value=f"`{duration_str}`", inline=True)
+    embed.set_footer(text=f"Spide Music | Запросил {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
-        embed = discord.Embed(
-            title=f"👤 Артист: {artist_name}", 
-            description="*Треки по этому запросу не найдены, но найден артист.*",
-            url=artist_url, 
-            color=0xFF8C00
-        )
-        if artist_image:
-            embed.set_thumbnail(url=artist_image)
-            
-        embed.set_footer(text=f"Spide Music | Запросил {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-        await msg.edit(content=None, embed=embed, view=TrackView(artist_url))
-        return
-
-    # Если вообще ничего нет
-    await msg.edit(content=f"🔎 По запросу **{query}** ничего не найдено.")
+    view = TrackView(track_url)
+    await msg.edit(content=None, embed=embed, view=view)
 
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
