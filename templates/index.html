@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpideBot | Панель управления</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .brand-color { color: #FF8C00; }
+        .brand-bg { background-color: #FF8C00; }
+        .brand-border { border-color: #FF8C00; }
+    </style>
+</head>
+<body class="bg-[#313338] text-[#DBDEE1] min-h-screen flex">
+
+    <!-- Боковая панель -->
+    <aside class="w-64 bg-[#2B2D31] flex flex-col hidden md:flex shadow-lg">
+        <div class="h-16 flex items-center px-6 border-b border-[#1E1F22]">
+            <i class="fa-brands fa-discord text-2xl brand-color mr-3"></i>
+            <span class="text-xl font-bold text-white tracking-wide">SpideBot</span>
+        </div>
+        <nav class="flex-1 px-4 py-6 space-y-2">
+            <a href="#" class="flex items-center px-4 py-3 bg-[#404249] text-white rounded-md transition-colors">
+                <i class="fa-solid fa-chart-pie w-6"></i>
+                <span class="ml-2 font-medium">Обзор</span>
+            </a>
+            <a href="#" class="flex items-center px-4 py-3 hover:bg-[#35373C] text-gray-400 hover:text-white rounded-md transition-colors">
+                <i class="fa-solid fa-list-ul w-6"></i>
+                <span class="ml-2 font-medium">Логи</span>
+            </a>
+            <a href="#" class="flex items-center px-4 py-3 hover:bg-[#35373C] text-gray-400 hover:text-white rounded-md transition-colors">
+                <i class="fa-solid fa-gear w-6"></i>
+                <span class="ml-2 font-medium">Настройки</span>
+            </a>
+        </nav>
+        <div class="p-4 border-t border-[#1E1F22] text-sm text-gray-500">
+            v1.0.0 • Bothost
+        </div>
+    </aside>
+
+    <!-- Основной контент -->
+    <main class="flex-1 flex flex-col">
+        <!-- Верхняя панель -->
+        <header class="h-16 bg-[#313338] flex items-center justify-between px-8 border-b border-[#1E1F22]">
+            <h1 class="text-lg font-semibold text-white">Панель управления</h1>
+            <div class="flex items-center space-x-4">
+                {% if status %}
+                    <span class="flex items-center text-sm font-medium text-green-400 bg-green-400/10 px-3 py-1 rounded-full">
+                        <span class="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span> В сети
+                    </span>
+                {% else %}
+                    <span class="flex items-center text-sm font-medium text-red-400 bg-red-400/10 px-3 py-1 rounded-full">
+                        <span class="w-2 h-2 bg-red-400 rounded-full mr-2"></span> Офлайн
+                    </span>
+                {% endif %}
+                <img src="https://cdn.discordapp.com/embed/avatars/0.png" alt="Bot Avatar" class="w-8 h-8 rounded-full">
+            </div>
+        </header>
+
+        <!-- Контент -->
+        <div class="p-8 space-y-6">
+            
+            <!-- Карточки статистики -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Сервера -->
+                <div class="bg-[#2B2D31] p-6 rounded-lg shadow-md border-l-4 brand-border">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-400 font-medium mb-1">Серверов</p>
+                            <h3 class="text-3xl font-bold text-white">{{ guilds }}</h3>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-[#404249] flex items-center justify-center brand-color text-xl">
+                            <i class="fa-solid fa-server"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Пинг -->
+                <div class="bg-[#2B2D31] p-6 rounded-lg shadow-md border-l-4 border-blue-500">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-400 font-medium mb-1">Пинг (Discord)</p>
+                            <h3 class="text-3xl font-bold text-white">{{ latency }} <span class="text-sm font-normal text-gray-500">мс</span></h3>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-[#404249] flex items-center justify-center text-blue-400 text-xl">
+                            <i class="fa-solid fa-wifi"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Статус системы -->
+                <div class="bg-[#2B2D31] p-6 rounded-lg shadow-md border-l-4 border-purple-500">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-400 font-medium mb-1">Хостинг</p>
+                            <h3 class="text-xl font-bold text-white mt-1">Работает</h3>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-[#404249] flex items-center justify-center text-purple-400 text-xl">
+                            <i class="fa-solid fa-cloud"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Блок с информацией о боте -->
+            <div class="bg-[#2B2D31] rounded-lg shadow-md p-6">
+                <h2 class="text-lg font-semibold text-white mb-4 border-b border-[#1E1F22] pb-2">Информация о системе</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                    <div class="flex justify-between py-2 border-b border-[#35373C]">
+                        <span class="text-gray-400">Имя бота</span>
+                        <span class="text-white font-medium">SpideBot</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-[#35373C]">
+                        <span class="text-gray-400">Платформа</span>
+                        <span class="text-white font-medium">Bothost (Python)</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-[#35373C]">
+                        <span class="text-gray-400">Статус веб-сервера</span>
+                        <span class="text-green-400 font-medium">Flask Active</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-[#35373C]">
+                        <span class="text-gray-400">Задачи (Cron)</span>
+                        <span class="text-white font-medium">3 активны</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+</body>
+</html>
