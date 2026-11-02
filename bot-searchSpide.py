@@ -9,6 +9,8 @@ import os
 import logging
 import datetime
 import re
+import threading
+from flask import Flask
 
 # ==============================
 # CONFIGURATION
@@ -44,10 +46,34 @@ ORANGE = 0xFF8C00
 
 # 🚨 ID КАНАЛОВ DISCORD
 TOP_CHANNEL_ID = 1422240878105198734      # Канал для ежедневного топа (03:22)
-UPDATE_CHANNEL_ID = 1566767775001616506   # Канал для постов из Telegram (новый ID)
+UPDATE_CHANNEL_ID = 1566767775001616506   # Канал для постов из Telegram
 
 DATA_DIR = os.getenv("DATA_DIR", ".")
 LAST_UPDATE_FILE = os.path.join(DATA_DIR, "last_update_id.txt")
+
+# ==============================
+# WEB SERVER (FLASK)
+# ==============================
+
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def index():
+    return "<h1>Панель управления SpideBot</h1><p>Бот работает и готов к управлению!</p>"
+
+@web_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_web_server():
+    port = int(os.getenv("PORT", 3000))
+    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+def start_web_panel():
+    web_thread = threading.Thread(target=run_web_server)
+    web_thread.daemon = True
+    web_thread.start()
+    logging.info(f"Веб-панель запущена на порту {os.getenv('PORT', 3000)}")
 
 # ==============================
 # HELPERS & VIEWS
@@ -165,7 +191,6 @@ def fetch_all_tg_posts():
 
 @tasks.loop(minutes=10)
 async def check_updates_task():
-    # 🚨 ИЗМЕНЕНО: Теперь берет UPDATE_CHANNEL_ID (новый канал)
     channel = bot.get_channel(UPDATE_CHANNEL_ID)
     if not channel: return
 
@@ -234,7 +259,6 @@ async def send_top_to_channel(channel):
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
-    # 🚨 Топ останется в старом канале (TOP_CHANNEL_ID)
     channel = bot.get_channel(TOP_CHANNEL_ID)
     if channel: await send_top_to_channel(channel)
 
@@ -281,12 +305,43 @@ async def checktg_now(ctx):
     await check_updates_task()
     await ctx.send("✅ Проверка завершена!")
 
+@bot.command(name='links')
+async def links(ctx):
+    embed = discord.Embed(
+        title="🔗 Официальные ресурсы Spide",
+        color=0xFF8C00,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_thumbnail(url="https://i.ibb.co/kjjqxXY/c92505b4-73cf-4058-b280-6cf3e3fd4b78.png")
+
+    embed.add_field(
+        name="Основное",
+        value="👨‍💻 **Разраб:** @spidelond\n"
+              "💬 **Телеграм канал:** [t.me/Spidedev](https://t.me/Spidedev)\n"
+              "🌐 **Веб версия:** [web.spide.ru](https://web.spide.ru)",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Тестеры\\Хелперы",
+        value="**Нимфоманка** — @Bloodthister \\\\ dedmak0193\n"
+              "**Ucatatsu** — @Ucatatsu \\\\ ucatatsu\n"
+              "**Валерий Александрович** — @prpavshiy \\\\ propavshiysnimok\n"
+              "**Нефильтрованный** — @Q_ko1dick \\\\ prosto_mishka19\n"
+              "**Смайл** — @Sm1Le_1337 \\\\ sm1le_1337",
+        inline=False
+    )
+
+    embed.set_footer(text="Spide Music | Запросил " + ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    await ctx.send(embed=embed)
+
 # ==============================
 # START
 # ==============================
 
 if __name__ == "__main__":
     if DISCORD_TOKEN:
+        start_web_panel()
         bot.run(DISCORD_TOKEN)
     else:
         logging.error("ОШИБКА: Не задан DISCORD_TOKEN!")
