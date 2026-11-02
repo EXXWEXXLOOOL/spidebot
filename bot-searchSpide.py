@@ -8,6 +8,7 @@ import urllib.parse
 import os
 import logging
 import datetime
+import re  # <--- ДОБАВЛЕНО для поиска картинок
 
 # ==============================
 # CONFIGURATION
@@ -35,16 +36,12 @@ SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spide.ru/search"
 SPIDE_TOP_SUMMARY = "https://web.spide.ru/api/v1/tops/summary?tz=Europe/Moscow"
 
-# НАСТРОЙКИ TELEGRAM (твой тестовый канал)
 TG_CHANNEL_NAME = "dsdedmak0193" 
 TG_URL = f"https://t.me/s/{TG_CHANNEL_NAME}"
 
 ORANGE = 0xFF8C00
-
-# Твой ID канала
 CHANNEL_ID = 1422240878105198734 
 
-# Файл для хранения ID последнего поста
 DATA_DIR = os.getenv("DATA_DIR", ".")
 LAST_UPDATE_FILE = os.path.join(DATA_DIR, "last_update_id.txt")
 
@@ -65,46 +62,28 @@ class TrackView(discord.ui.View):
         )
 
 def format_duration(duration_ms):
-    try:
-        duration_ms = int(duration_ms or 0)
-    except (ValueError, TypeError):
-        duration_ms = 0
+    try: duration_ms = int(duration_ms or 0)
+    except (ValueError, TypeError): duration_ms = 0
     minutes = duration_ms // 60000
     seconds = (duration_ms % 60000) // 1000
-    return str(minutes) + ":" + str(seconds).zfill(2)
+    return f"{minutes}:{seconds:02d}"
 
 def format_artists(artists):
-    if not isinstance(artists, list):
-        return "Неизвестный исполнитель"
-    names = []
-    for artist in artists:
-        if isinstance(artist, dict):
-            name = artist.get("name")
-        elif isinstance(artist, str):
-            name = artist
-        else:
-            name = None
-        if name:
-            names.append(str(name))
+    if not isinstance(artists, list): return "Неизвестный исполнитель"
+    names = [str(a.get("name")) for a in artists if isinstance(a, dict) and a.get("name")]
     return ", ".join(names) if names else "Неизвестный исполнитель"
 
 def get_album_name(album):
-    if isinstance(album, dict):
-        return album.get("title") or album.get("name") or "Сингл"
-    if isinstance(album, str):
-        return album or "Сингл"
-    return "Сингл"
+    if isinstance(album, dict): return album.get("title") or album.get("name") or "Сингл"
+    return album if isinstance(album, str) and album else "Сингл"
 
 def search_spide(query, headers):
     params = urllib.parse.urlencode({"q": query, "type": "all", "limit": 10})
-    url = SPIDE_API + "?" + params
+    url = f"{SPIDE_API}?{params}"
     response = requests.get(url, headers=headers, impersonate="chrome", timeout=20)
     response.raise_for_status()
     data = response.json()
-    if not isinstance(data, dict):
-        raise ValueError("Неожиданный формат ответа Spide")
-    if data.get("error"):
-        raise ValueError(str(data["error"]))
+    if data.get("error"): raise ValueError(str(data["error"]))
     return data
 
 def create_track_embed(track, ctx, query):
@@ -112,26 +91,18 @@ def create_track_embed(track, ctx, query):
     artists = format_artists(track.get("artists", []))
     album_name = get_album_name(track.get("album"))
     duration = format_duration(track.get("durationMs", 0))
+    cover = track.get("cover") if isinstance(track.get("cover"), str) and track["cover"].startswith("http") else None
     
-    cover = track.get("cover")
-    if not isinstance(cover, str) or not cover.startswith(("https://", "http://")):
-        cover = None
+    search_query = f"{title} {artists}".strip()
+    track_url = f"{SPIDE_SEARCH}?{urllib.parse.urlencode({'q': search_query})}"
 
-    search_query = (title + " " + artists).strip()
-    search_params = urllib.parse.urlencode({"q": search_query})
-    track_url = SPIDE_SEARCH + "?" + search_params
-
-    embed = discord.Embed(
-        title=title[:256], url=track_url, description="**" + artists[:1000] + "**",
-        color=ORANGE, timestamp=discord.utils.utcnow()
-    )
+    embed = discord.Embed(title=title[:256], url=track_url, description=f"**{artists[:1000]}**", color=ORANGE, timestamp=discord.utils.utcnow())
     embed.set_author(name="SPIDE MUSIC  /  TRACK")
-    if cover:
-        embed.set_thumbnail(url=cover)
-    embed.add_field(name="АЛЬБОМ", value="*" + album_name[:1024] + "*", inline=True)
-    embed.add_field(name="ДЛИТЕЛЬНОСТЬ", value="`" + duration + "`", inline=True)
-    embed.add_field(name="ПОИСКОВЫЙ ЗАПРОС", value="`" + query[:100] + "`", inline=False)
-    embed.set_footer(text="SPIDE MUSIC  •  Запросил " + ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    if cover: embed.set_thumbnail(url=cover)
+    embed.add_field(name="АЛЬБОМ", value=f"*{album_name[:1024]}*", inline=True)
+    embed.add_field(name="ДЛИТЕЛЬНОСТЬ", value=f"`{duration}`", inline=True)
+    embed.add_field(name="ПОИСКОВЫЙ ЗАПРОС", value=f"`{query[:100]}`", inline=False)
+    embed.set_footer(text=f"SPIDE MUSIC  •  Запросил {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
     return embed, track_url
 
 # ==============================
@@ -161,19 +132,28 @@ def fetch_all_tg_posts():
         posts = []
         for msg in messages:
             post_id_str = msg.get('data-post')
-            if not post_id_str:
-                continue
+            if not post_id_str: continue
             
-            try:
-                post_id = int(post_id_str.split('/')[-1])
-            except ValueError:
-                continue
+            try: post_id = int(post_id_str.split('/')[-1])
+            except ValueError: continue
                 
             text_div = msg.find('div', class_='tgme_widget_message_text')
             text = text_div.get_text(separator='\n', strip=True) if text_div else ""
             
-            if text:
-                posts.append({"id": post_id, "text": text})
+            # === ПАРСИНГ КАРТИНКИ ===
+            image_url = None
+            # Telegram хранит картинки в стилях тега <a class="tgme_widget_message_photo_wrap">
+            photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
+            if photo_wrap and 'style' in photo_wrap.attrs:
+                style = photo_wrap['style']
+                # Ищем ссылку внутри background-image: url('https://...')
+                match = re.search(r"url\('([^']+)'\)", style)
+                if match:
+                    image_url = match.group(1)
+
+            # Добавляем пост, если есть текст ИЛИ картинка
+            if text or image_url:
+                posts.append({"id": post_id, "text": text, "image_url": image_url})
                 
         return posts
     except Exception as e:
@@ -184,15 +164,13 @@ def fetch_all_tg_posts():
 # TASKS
 # ==============================
 
-@tasks.loop(minutes=30)
+@tasks.loop(minutes=10)
 async def check_updates_task():
     channel = bot.get_channel(CHANNEL_ID)
-    if not channel:
-        return
+    if not channel: return
 
     posts = await asyncio.to_thread(fetch_all_tg_posts)
-    if not posts:
-        return
+    if not posts: return
 
     last_id = get_last_saved_id()
 
@@ -206,24 +184,36 @@ async def check_updates_task():
     new_posts.sort(key=lambda x: x['id'])
 
     for post in new_posts:
+        # Если текста нет, но есть картинка, ставим текст-заглушку
+        desc_text = post["text"][:4000] if post["text"] else "*Пост с изображением*"
+        
         embed = discord.Embed(
             title="📢 Новый пост в Telegram-канале",
-            description=post["text"][:4000],
+            description=desc_text,
             color=ORANGE,
             timestamp=discord.utils.utcnow()
         )
-        embed.add_field(name="Ссылка на пост", value=f"[Открыть в Telegram](https://t.me/{TG_CHANNEL_NAME}/{post['id']})")
+        
+        # === ДОБАВЛЕНИЕ КАРТИНКИ В EMBED ===
+        if post.get("image_url"):
+            embed.set_image(url=post["image_url"])
+
+        embed.add_field(name="Ссылка на пост", value=f"[Открыть в Telegram](https://t.me/{TG_CHANNEL_NAME}/{post['id']})", inline=False)
         embed.set_footer(text="SPIDE MUSIC  •  Автоматическая рассылка")
         
         try:
             await channel.send(embed=embed)
-            await asyncio.sleep(2)
+            await asyncio.sleep(2) 
         except Exception as e:
             logging.error(f"Не удалось отправить пост {post['id']}: {e}")
 
     if new_posts:
         save_last_id(new_posts[-1]['id'])
-        logging.info(f"Отправлено {len(new_posts)} новых постов. Новый last_id: {new_posts[-1]['id']}")
+        logging.info(f"Отправлено {len(new_posts)} новых постов.")
+
+# ==============================
+# (ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ)
+# ==============================
 
 async def send_top_to_channel(channel):
     if not COOKIE_STRING: return
@@ -235,14 +225,13 @@ async def send_top_to_channel(channel):
         listeners_board = next((b for b in data.get("boards", []) if b.get("board") == "listeners"), None)
         if not listeners_board: return
 
-        leaders = listeners_board.get("leaders", [])
+        leaders = listeners_board.get("leaders", [])[:3]
         total = listeners_board.get("total", 0)
         embed = discord.Embed(title="🏆 Топ слушателей Spide", description=f"Обновлено за **{data.get('day', 'Сегодня')}**\nВсего участников: `{total}`", color=ORANGE)
-        for i, leader in enumerate(leaders[:3]):
+        for i, leader in enumerate(leaders):
             medals = ["🥇", "🥈", "🥉"]
             embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{leader.get('displayName', 'Неизвестно')}**", inline=True)
-            if i == 0 and leader.get("photoUrl"):
-                embed.set_thumbnail(url=leader["photoUrl"])
+            if i == 0 and leader.get("photoUrl"): embed.set_thumbnail(url=leader["photoUrl"])
         embed.set_footer(text="SPIDE MUSIC  •  Автоматическое обновление")
         await channel.send(embed=embed)
     except Exception as e:
@@ -253,13 +242,9 @@ async def daily_top_task():
     channel = bot.get_channel(CHANNEL_ID)
     if channel: await send_top_to_channel(channel)
 
-# ==============================
-# EVENTS & COMMANDS
-# ==============================
-
 @bot.event
 async def on_ready():
-    logging.info("Бот %s успешно запущен!", bot.user)
+    logging.info(f"Бот {bot.user} успешно запущен!")
     if not daily_top_task.is_running(): daily_top_task.start()
     if not check_updates_task.is_running(): check_updates_task.start()
 
@@ -295,10 +280,6 @@ async def checktg_now(ctx):
     await ctx.send("🔍 Проверяю Telegram-канал...")
     await check_updates_task()
     await ctx.send("✅ Проверка завершена!")
-
-# ==============================
-# START
-# ==============================
 
 if __name__ == "__main__":
     if DISCORD_TOKEN:
