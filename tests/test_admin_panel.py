@@ -157,6 +157,18 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
     assert "web_app" in namespace
     assert "admin" in namespace["web_app"].blueprints
 
+    slash_names = {command.name for command in namespace["bot"].tree.get_commands()}
+    assert {
+        "search", "поиск",
+        "top", "топ",
+        "links", "ссылки",
+        "checktg", "проверить_тг",
+        "rules", "правила",
+        "setup_roles", "роли",
+        "commands", "команды",
+    } <= slash_names
+    assert namespace["bot"].get_command("поиск") is not None
+
 def test_leaderboard_medals_are_only_used_for_top_three(tmp_path, monkeypatch):
     import runpy
     from pathlib import Path
