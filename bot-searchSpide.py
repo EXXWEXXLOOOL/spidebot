@@ -377,10 +377,12 @@ register_admin_panel(
         "checktg": _admin_queue_checktg,
         "top": _admin_queue_top,
         "cookie": _admin_queue_cookie_test,
+        "notification_test": _admin_queue_notification_test,
     },
     get_top_data=_admin_get_top_data,
     data_dir=DATA_DIR,
     url_prefix="/admin",
+    moderation_action=_admin_moderation_action,
 )
 
 @web_app.before_request
