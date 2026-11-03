@@ -495,7 +495,7 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         settings = cfg.get("automation", {})
         defaults = {
             "telegram_enabled": True, "telegram_interval_minutes": 10,
-            "daily_top_enabled": True, "daily_top_hour_utc": 0,
+            "daily_top_enabled": True, "daily_top_hour_utc": 3,
             "daily_top_minute_utc": 22,
         }
         defaults.update(settings)
@@ -507,7 +507,7 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         require_csrf()
         try:
             interval = int(request.form.get("telegram_interval_minutes", "10"))
-            hour = int(request.form.get("daily_top_hour_utc", "0"))
+            hour = int(request.form.get("daily_top_hour_utc", "3"))
             minute = int(request.form.get("daily_top_minute_utc", "22"))
             if not 1 <= interval <= 1440 or not 0 <= hour <= 23 or not 0 <= minute <= 59:
                 raise ValueError("Значения вне допустимого диапазона")
