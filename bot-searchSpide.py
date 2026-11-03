@@ -491,99 +491,115 @@ async def force_checktg():
 async def check_updates_task():
     await force_checktg()
 
+def _build_listener_top_embed(data):
+    """Build the Spide listener ranking embed with medals reserved for places 1–3."""
+    leaders = (data.get("rows") or [])[:10]
+    total = data.get("total", "Неизвестно")
+    date_str = str(data.get("day") or "Сегодня")[:80]
+
+    def safe_score(value):
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def format_score(value):
+        return f"{safe_score(value):,}".replace(",", " ")
+
+    def clean_name(user, limit=70):
+        name = str((user or {}).get("displayName") or "Неизвестно")
+        return name.replace("\n", " ").replace("\r", " ").strip()[:limit] or "Неизвестно"
+
+    embed = discord.Embed(
+        title="🏆 ТОП-10 СЛУШАТЕЛЕЙ SPIDE",
+        description=(
+            f"**{date_str}**  ·  Всего участников: **{total}**\n"
+            "Рейтинг самых активных слушателей Spide Music"
+        ),
+        color=0xFF8738,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_author(name="SPIDE MUSIC  /  LISTENER RANKING")
+
+    medals = ("🥇", "🥈", "🥉")
+    place_labels = ("1 МЕСТО", "2 МЕСТО", "3 МЕСТО")
+
+    # Medals are reserved exclusively for the podium.
+    for index, row in enumerate(leaders[:3]):
+        user = row.get("user") or {}
+        embed.add_field(
+            name=f"{medals[index]}  {place_labels[index]}",
+            value=f"**{clean_name(user)}**\n**{format_score(row.get('score'))} минут**",
+            inline=True
+        )
+
+        if index == 0:
+            photo = user.get("photoUrl")
+            if isinstance(photo, str) and photo.startswith(("https://", "http://")):
+                embed.set_thumbnail(url=photo)
+
+    if len(leaders) > 3:
+        other_lines = []
+        for place, row in enumerate(leaders[3:10], start=4):
+            user = row.get("user") or {}
+            name = clean_name(user, limit=65)
+            score = format_score(row.get("score"))
+            # Plain rank numbers only: no medals or rank emojis after third place.
+            other_lines.append(f"**{place:02d}.**  {name}  ·  **{score} мин**")
+
+        embed.add_field(
+            name="ОСТАЛЬНЫЕ УЧАСТНИКИ",
+            value="\n".join(other_lines),
+            inline=False
+        )
+
+    embed.set_footer(text="SPIDE MUSIC  •  Ежедневный рейтинг")
+    return embed
+
+
 async def force_top(target_channel):
     global app_config
+    if target_channel is None:
+        return False
+
     app_config = load_config()
     cookie = app_config.get("SPIDE_COOKIE", "")
-    
+
     if not cookie:
         await target_channel.send("❌ Ошибка: Куки Spide не заданы.")
         return False
-    if not target_channel: 
-        return False
 
     headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
-    
+
     try:
-        response = await asyncio.to_thread(requests.get, SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
-        
+        response = await asyncio.to_thread(
+            requests.get,
+            SPIDE_TOP_LISTENERS,
+            headers=headers,
+            impersonate="chrome",
+            timeout=20
+        )
+
         if response.status_code != 200:
-            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Куки протухли."
+            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Куки могли устареть."
             logging.error(err_msg)
             await target_channel.send(err_msg)
             return False
 
         data = response.json()
-        leaders = data.get("rows", [])
-        
-        if not leaders:
-            logging.error(f"Не удалось найти список слушателей. Ответ: {str(data)[:300]}")
-            await target_channel.send("⚠️ Ошибка: API Spide вернул данные в неизвестном формате.")
+        if not isinstance(data, dict) or not data.get("rows"):
+            logging.error("Spide API вернул пустой или некорректный рейтинг: %s", str(data)[:300])
+            await target_channel.send("⚠️ Не удалось получить список слушателей Spide.")
             return False
 
-        top_10 = leaders[:10]
-        total = data.get("total", "Неизвестно")
-        date_str = data.get("day", "Сегодня")
-
-        embed = discord.Embed(
-            title="🏆 SPIDE MUSIC — ТОП СЛУШАТЕЛЕЙ",
-            description=(
-                f"**Период:** {date_str}  •  **Участников:** `{total}`\n"
-                "🎧  Лучшие слушатели сообщества Spide"
-            ),
-            color=ORANGE,
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_author(name="SPIDE  /  LISTENER RANKING")
-
-        medals = ["🥇", "🥈", "🥉"]
-        podium_labels = ["ПЕРВОЕ МЕСТО", "ВТОРОЕ МЕСТО", "ТРЕТЬЕ МЕСТО"]
-
-        def safe_score(value):
-            try:
-                return max(0, int(value or 0))
-            except (TypeError, ValueError):
-                return 0
-
-        def format_score(value):
-            return f"{safe_score(value):,}".replace(",", " ")
-
-        for i, row in enumerate(top_10[:3]):
-            user = row.get("user") or {}
-            name = str(user.get("displayName") or "Неизвестно")[:70]
-            score = format_score(row.get("score"))
-            embed.add_field(
-                name=f"{medals[i]}  {podium_labels[i]}",
-                value=f"**{name}**\n`{score}` минут",
-                inline=True
-            )
-            if i == 0 and user.get("photoUrl"):
-                photo = user["photoUrl"]
-                if isinstance(photo, str) and photo.startswith(("https://", "http://")):
-                    embed.set_thumbnail(url=photo)
-
-        if len(top_10) > 3:
-            lines = []
-            rank_emojis = {4: "🏅", 5: "🎖️", 6: "🔸", 7: "🔸", 8: "🔸", 9: "🔸", 10: "🔸"}
-            for i, row in enumerate(top_10[3:10], 4):
-                user = row.get("user") or {}
-                name = str(user.get("displayName") or "Неизвестно")[:65]
-                score = format_score(row.get("score"))
-                lines.append(f"{rank_emojis.get(i, '▫️')} **{i:02d}. {name}**  ·  `{score}` мин")
-            embed.add_field(
-                name="📋 ОСТАЛЬНЫЕ УЧАСТНИКИ",
-                value="\n".join(lines),
-                inline=False
-            )
-
-        embed.set_footer(text="SPIDE MUSIC  •  Ежедневный рейтинг")
+        embed = _build_listener_top_embed(data)
         await target_channel.send(embed=embed)
         return True
-    except Exception as e:
-            err_msg = f"❌ Ошибка получения топа: `{e}`"
-            logging.error(err_msg)
-            await target_channel.send(err_msg)
-            return False
+
+    except Exception as exc:
+        logging.exception("Ошибка получения топа Spide")
+        await target_channel.send(f"❌ Ошибка получения топа: {str(exc)[:500]}")
+        return False
 
 @tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
 async def daily_top_task():
