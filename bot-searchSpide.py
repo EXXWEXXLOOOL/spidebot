@@ -554,7 +554,7 @@ async def force_top(target_channel):
             title="🏆 SPIDE MUSIC — ТОП СЛУШАТЕЛЕЙ",
             description=(
                 f"**Период:** {date_str}  •  **Участников:** `{total}`\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                "🎧  Лучшие слушатели сообщества Spide"
             ),
             color=ORANGE,
             timestamp=discord.utils.utcnow()
