@@ -1330,10 +1330,19 @@ async def automation_scheduler():
             save_config(app_config)
             await _publish_daily_top()
 
+@tasks.loop(seconds=5)
+async def giveaway_scheduler():
+    """Check due giveaways independently of slower Telegram and daily-top jobs."""
+    now = datetime.datetime.now(datetime.timezone.utc)
     try:
         await _process_due_giveaways(now)
     except Exception:
-        logging.exception("Ошибка обработки запланированных розыгрышей")
+        logging.exception("Ошибка быстрой проверки запланированных розыгрышей")
+
+
+@giveaway_scheduler.before_loop
+async def before_giveaway_scheduler():
+    await bot.wait_until_ready()
 
 register_admin_panel(
     web_app,
@@ -1386,6 +1395,9 @@ async def on_ready():
 
     if not automation_scheduler.is_running():
         automation_scheduler.start()
+    if not giveaway_scheduler.is_running():
+        giveaway_scheduler.start()
+        logging.info("Запущена отдельная проверка розыгрышей каждые 5 секунд")
     notification_settings = app_config.get("notifications", {})
     if not _ready_notification_sent and notification_settings.get("notify_startup", True):
         await send_admin_notification("🟢 SpideBot запущен и подключён к Discord.")
