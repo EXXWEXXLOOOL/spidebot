@@ -540,20 +540,30 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
     published_to = []
 
     class FakeResponse:
+        def __init__(self):
+            self.defer_kwargs = None
+
         async def defer(self, **kwargs):
             self.deferred = True
+            self.defer_kwargs = kwargs
 
     class FakeFollowup:
+        def __init__(self):
+            self.messages = []
+
         async def send(self, *args, **kwargs):
+            self.messages.append((args, kwargs))
             return None
 
+    fake_response = FakeResponse()
+    fake_followup = FakeFollowup()
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=123),
         guild=object(),
         channel=invocation_channel,
         command=SimpleNamespace(name="top"),
-        response=FakeResponse(),
-        followup=FakeFollowup(),
+        response=fake_response,
+        followup=fake_followup,
     )
 
     async def allow_top(_interaction, _command_key):
@@ -575,6 +585,8 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
 
     asyncio.run(namespace["slash_top"].callback(interaction))
     assert published_to == [invocation_channel]
+    assert fake_response.defer_kwargs == {"ephemeral": False, "thinking": True}
+    assert fake_followup.messages[0][1]["ephemeral"] is False
     assert top_log_entries[0]["event_name"] == "TOP_COMMAND_USED"
     assert top_log_entries[0]["outcome"] == "invoked"
 
