@@ -270,48 +270,61 @@ class GiveawayJoinView(discord.ui.View):
 _registered_giveaway_views = set()
 
 
-def _register_persistent_giveaway_view(giveaway_id, message_id):
+def _register_persistent_giveaway_view(giveaway_id, message_id, participant_count=0, disabled=False):
     key = str(giveaway_id)
     if key in _registered_giveaway_views:
         return
     bot.add_view(
-        GiveawayJoinView(key),
+        GiveawayJoinView(key, participant_count=participant_count, disabled=disabled),
         message_id=int(message_id),
     )
     _registered_giveaway_views.add(key)
 
 
 async def _restore_giveaway_views():
-    """Re-register active giveaway buttons after reconnects or restarts."""
+    """Re-register giveaway buttons after reconnects or restarts."""
     for giveaway_id, giveaway in _load_giveaways().items():
-        if giveaway.get("status") == "active" and giveaway.get("message_id"):
+        status = giveaway.get("status")
+        needs_view = status == "active" or (status == "drawn" and not giveaway.get("result_published"))
+        if needs_view and giveaway.get("message_id"):
             try:
-                _register_persistent_giveaway_view(giveaway_id, giveaway["message_id"])
+                _register_persistent_giveaway_view(
+                    giveaway_id,
+                    giveaway["message_id"],
+                    participant_count=len(giveaway.get("participants", [])),
+                    disabled=status != "active",
+                )
             except (ValueError, TypeError):
                 logging.exception("Не удалось восстановить кнопку розыгрыша %s", giveaway_id)
 
 
 async def _process_due_giveaways(now=None):
-    """Draw winners for due giveaways; scheduler calls this once per minute."""
+    """Draw winners for due giveaways and retry publishing results after restarts."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     giveaways = _load_giveaways()
     for giveaway_id, giveaway in giveaways.items():
-        if giveaway.get("status") != "active":
-            continue
-        draw_at = _parse_giveaway_draw_at(giveaway.get("draw_at"))
-        if draw_at is None or draw_at > now:
+        if giveaway.get("status") == "active":
+            draw_at = _parse_giveaway_draw_at(giveaway.get("draw_at"))
+            if draw_at is None or draw_at > now:
+                continue
+
+            entrants = [
+                int(value) for value in giveaway.get("participants", [])
+                if str(value).isdigit()
+            ]
+            giveaway["status"] = "drawn"
+            giveaway["winner_id"] = secrets.choice(entrants) if entrants else None
+            giveaway["drawn_at"] = now.astimezone(datetime.timezone.utc).isoformat()
+            giveaway["result_published"] = False
+            _save_giveaways(giveaways)
+        elif giveaway.get("status") != "drawn" or giveaway.get("result_published"):
             continue
 
         entrants = [
             int(value) for value in giveaway.get("participants", [])
             if str(value).isdigit()
         ]
-        winner_id = secrets.choice(entrants) if entrants else None
-        giveaway["status"] = "drawn"
-        giveaway["winner_id"] = winner_id
-        giveaway["drawn_at"] = now.astimezone(datetime.timezone.utc).isoformat()
-        _save_giveaways(giveaways)
-
+        winner_id = giveaway.get("winner_id")
         try:
             channel_id = int(giveaway.get("channel_id", 0))
             channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
@@ -324,6 +337,8 @@ async def _process_due_giveaways(now=None):
                     disabled=True,
                 ),
             )
+            giveaway["result_published"] = True
+            _save_giveaways(giveaways)
             logging.info(
                 "Розыгрыш %s завершён на сервере %s; участников: %s; победитель: %s",
                 giveaway_id,
