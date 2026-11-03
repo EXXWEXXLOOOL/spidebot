@@ -45,7 +45,22 @@ DEFAULT_CONFIG = {
     "SPIDE_COOKIE": os.getenv("SPIDE_COOKIE", ""),
     "tg_channels": ["dsdedmak0193"],
     "last_ids": {"dsdedmak0193": 0},
-    "permissions": {}
+    "permissions": {},
+    "automation": {
+        "telegram_enabled": True,
+        "telegram_interval_minutes": 10,
+        "daily_top_enabled": True,
+        "daily_top_hour_utc": 0,
+        "daily_top_minute_utc": 22
+    },
+    "automation_state": {},
+    "notifications": {
+        "enabled": False,
+        "channel_id": 0,
+        "notify_startup": True,
+        "notify_disconnect": True,
+        "notify_errors": False
+    }
 }
 
 def load_config():
@@ -362,10 +377,12 @@ register_admin_panel(
         "checktg": _admin_queue_checktg,
         "top": _admin_queue_top,
         "cookie": _admin_queue_cookie_test,
+        "notification_test": _admin_queue_notification_test,
     },
     get_top_data=_admin_get_top_data,
     data_dir=DATA_DIR,
     url_prefix="/admin",
+    moderation_action=_admin_moderation_action,
 )
 
 @web_app.before_request
@@ -534,33 +551,57 @@ async def force_top(target_channel):
         date_str = data.get("day", "Сегодня")
 
         embed = discord.Embed(
-            title="🏆 Топ-10 слушателей Spide", 
-            description=f"**Обновлено за:** {date_str}\n**Всего участников:** `{total}`", 
+            title="🏆 SPIDE MUSIC — ТОП СЛУШАТЕЛЕЙ",
+            description=(
+                f"**Период:** {date_str}  •  **Участников:** `{total}`\n"
+                "🎧  Лучшие слушатели сообщества Spide"
+            ),
             color=ORANGE,
             timestamp=discord.utils.utcnow()
         )
+        embed.set_author(name="SPIDE  /  LISTENER RANKING")
 
         medals = ["🥇", "🥈", "🥉"]
-        
+        podium_labels = ["ПЕРВОЕ МЕСТО", "ВТОРОЕ МЕСТО", "ТРЕТЬЕ МЕСТО"]
+
+        def safe_score(value):
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        def format_score(value):
+            return f"{safe_score(value):,}".replace(",", " ")
+
         for i, row in enumerate(top_10[:3]):
-            user = row.get("user", {})
-            name = user.get("displayName") or "Неизвестно"
-            score = row.get("score", 0)
-            formatted_score = f"{score:,}".replace(",", " ")
-            embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**\n`{formatted_score}` мин", inline=True)
-            if i == 0 and user.get("photoUrl"): embed.set_thumbnail(url=user["photoUrl"])
+            user = row.get("user") or {}
+            name = str(user.get("displayName") or "Неизвестно")[:70]
+            score = format_score(row.get("score"))
+            embed.add_field(
+                name=f"{medals[i]}  {podium_labels[i]}",
+                value=f"**{name}**\n`{score}` минут",
+                inline=True
+            )
+            if i == 0 and user.get("photoUrl"):
+                photo = user["photoUrl"]
+                if isinstance(photo, str) and photo.startswith(("https://", "http://")):
+                    embed.set_thumbnail(url=photo)
 
         if len(top_10) > 3:
-            other_places = ""
-            for i, row in enumerate(top_10[3:], 4):
-                user = row.get("user", {})
-                name = user.get("displayName") or "Неизвестно"
-                score = row.get("score", 0)
-                formatted_score = f"{score:,}".replace(",", " ")
-                other_places += f"`{i:02d}.` **{name}** — `{formatted_score}` мин\n"
-            embed.add_field(name="Остальные", value=other_places, inline=False)
+            lines = []
+            rank_emojis = {4: "🏅", 5: "🎖️", 6: "🔸", 7: "🔸", 8: "🔸", 9: "🔸", 10: "🔸"}
+            for i, row in enumerate(top_10[3:10], 4):
+                user = row.get("user") or {}
+                name = str(user.get("displayName") or "Неизвестно")[:65]
+                score = format_score(row.get("score"))
+                lines.append(f"{rank_emojis.get(i, '▫️')} **{i:02d}. {name}**  ·  `{score}` мин")
+            embed.add_field(
+                name="📋 ОСТАЛЬНЫЕ УЧАСТНИКИ",
+                value="\n".join(lines),
+                inline=False
+            )
 
-        embed.set_footer(text="SPIDE MUSIC  •  Автоматическое обновление")
+        embed.set_footer(text="SPIDE MUSIC  •  Ежедневный рейтинг")
         await target_channel.send(embed=embed)
         return True
     except Exception as e:
@@ -590,13 +631,182 @@ async def test_spide_cookie():
         logging.error(f"❌ Тест куки: Ошибка - {e}")
 
 # ==============================
+# ==============================
+# AUTOMATION, NOTIFICATIONS & MODERATION
+# ==============================
+_ready_notification_sent = False
+
+async def send_admin_notification(message, force=False):
+    settings = app_config.get("notifications", {})
+    if not force and not settings.get("enabled", False):
+        return False
+    channel_id = int(settings.get("channel_id") or 0)
+    if not channel_id:
+        logging.warning("Уведомления SpideBot: не выбран Discord-канал.")
+        return False
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            logging.exception("Не удалось получить канал уведомлений %s", channel_id)
+            return False
+    try:
+        embed = discord.Embed(
+            description=str(message)[:4000],
+            color=ORANGE,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_author(name="SPIDEBOT • SYSTEM NOTIFICATION")
+        await channel.send(embed=embed)
+        return True
+    except Exception:
+        logging.exception("Не удалось отправить системное уведомление")
+        return False
+
+def _queue_admin_notification(message, force=False):
+    if not bot.loop or not bot.loop.is_running():
+        raise RuntimeError("Discord event loop is not running")
+    return asyncio.run_coroutine_threadsafe(send_admin_notification(message, force=force), bot.loop)
+
+def _admin_queue_notification_test():
+    settings = app_config.get("notifications", {})
+    if not settings.get("channel_id"):
+        raise RuntimeError("Сначала выберите канал уведомлений")
+    _queue_admin_notification("✅ Тестовое уведомление SpideBot. Канал настроен правильно.", force=True)
+
+async def _moderate_member_async(action, guild_id, user_id, reason, duration_minutes):
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        raise RuntimeError("Бот не состоит на выбранном Discord-сервере")
+    bot_member = guild.me
+    if bot_member is None:
+        raise RuntimeError("Не удалось определить участника-бота на сервере")
+    permissions = bot_member.guild_permissions
+
+    if action == "unban":
+        if not permissions.ban_members:
+            raise PermissionError("Боту необходимо право Ban Members")
+        await guild.unban(discord.Object(id=user_id), reason=reason)
+        logging.info("MODERATION: unban user=%s guild=%s reason=%s", user_id, guild_id, reason)
+        return
+
+    try:
+        member = await guild.fetch_member(user_id)
+    except discord.NotFound as exc:
+        raise RuntimeError("Пользователь не найден на этом сервере") from exc
+
+    if member.id == guild.owner_id:
+        raise PermissionError("Нельзя применять модерацию к владельцу сервера")
+    if member.top_role >= bot_member.top_role:
+        raise PermissionError("Роль пользователя выше или равна высшей роли бота")
+
+    if action == "timeout":
+        if not permissions.moderate_members:
+            raise PermissionError("Боту необходимо право Moderate Members")
+        until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=duration_minutes)
+        await member.timeout(until, reason=reason)
+        logging.info("MODERATION: timeout user=%s guild=%s minutes=%s reason=%s", user_id, guild_id, duration_minutes, reason)
+    elif action == "kick":
+        if not permissions.kick_members:
+            raise PermissionError("Боту необходимо право Kick Members")
+        await member.kick(reason=reason)
+        logging.info("MODERATION: kick user=%s guild=%s reason=%s", user_id, guild_id, reason)
+    elif action == "ban":
+        if not permissions.ban_members:
+            raise PermissionError("Боту необходимо право Ban Members")
+        await guild.ban(member, reason=reason, delete_message_seconds=0)
+        logging.info("MODERATION: ban user=%s guild=%s reason=%s", user_id, guild_id, reason)
+    else:
+        raise ValueError("Неизвестное действие модерации")
+
+def _admin_moderation_action(action, guild_id, user_id, reason, duration_minutes):
+    if not bot.loop or not bot.loop.is_running():
+        raise RuntimeError("Discord event loop is not running")
+    future = asyncio.run_coroutine_threadsafe(
+        _moderate_member_async(action, guild_id, user_id, reason, duration_minutes),
+        bot.loop
+    )
+    def report_result(done):
+        try:
+            done.result()
+        except Exception as exc:
+            logging.error("MODERATION FAILED action=%s user=%s guild=%s: %s", action, user_id, guild_id, exc)
+    future.add_done_callback(report_result)
+    return future
+
+@tasks.loop(minutes=1)
+async def automation_scheduler():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    settings = app_config.get("automation", {})
+    state = app_config.setdefault("automation_state", {})
+
+    if settings.get("telegram_enabled", True):
+        interval = max(1, min(1440, int(settings.get("telegram_interval_minutes", 10))))
+        last_raw = state.get("last_telegram_check")
+        due = True
+        if last_raw:
+            try:
+                last = datetime.datetime.fromisoformat(last_raw)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=datetime.timezone.utc)
+                due = now - last >= datetime.timedelta(minutes=interval)
+            except (TypeError, ValueError):
+                due = True
+        if due:
+            state["last_telegram_check"] = now.isoformat()
+            save_config(app_config)
+            try:
+                await force_checktg()
+            except Exception:
+                logging.exception("Ошибка автоматической проверки Telegram")
+
+    if settings.get("daily_top_enabled", True):
+        try:
+            hour = int(settings.get("daily_top_hour_utc", 0))
+            minute = int(settings.get("daily_top_minute_utc", 22))
+        except (TypeError, ValueError):
+            hour, minute = 0, 22
+        today = now.date().isoformat()
+        if now.hour == hour and now.minute == minute and state.get("last_daily_top_date") != today:
+            state["last_daily_top_date"] = today
+            save_config(app_config)
+            channel = bot.get_channel(TOP_CHANNEL_ID)
+            if channel is not None:
+                await force_top(channel)
+            else:
+                logging.error("Автоматическая публикация топа: канал %s недоступен", TOP_CHANNEL_ID)
+
 # EVENTS & COMMANDS
 # ==============================
 @bot.event
 async def on_ready():
+    global _ready_notification_sent
     logging.info(f"Бот {bot.user} успешно запущен!")
-    if not daily_top_task.is_running(): daily_top_task.start()
-    if not check_updates_task.is_running(): check_updates_task.start()
+    if not automation_scheduler.is_running():
+        automation_scheduler.start()
+    notification_settings = app_config.get("notifications", {})
+    if not _ready_notification_sent and notification_settings.get("notify_startup", True):
+        await send_admin_notification("🟢 SpideBot запущен и подключён к Discord.")
+        _ready_notification_sent = True
+
+@bot.event
+async def on_disconnect():
+    notification_settings = app_config.get("notifications", {})
+    if notification_settings.get("notify_disconnect", True):
+        await send_admin_notification("🔴 SpideBot потерял соединение с Discord Gateway.")
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    logging.error("Ошибка Discord-команды %s: %s", getattr(ctx.command, "qualified_name", "unknown"), error)
+    settings = app_config.get("notifications", {})
+    if settings.get("enabled") and settings.get("notify_errors"):
+        await send_admin_notification(
+            f"Ошибка команды {getattr(ctx.command, 'qualified_name', 'unknown')} на сервере "
+            f"{ctx.guild.id if ctx.guild else 'DM'}: {str(error)[:900]}"
+        )
 
 @bot.command(name="setup_roles")
 @commands.has_permissions(administrator=True)

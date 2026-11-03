@@ -25,7 +25,7 @@ the login page.
    - Keep existing `DISCORD_TOKEN`, `SPIDE_COOKIE`, `PORT` and `DATA_DIR`
      configured as before.
 
-3. Deploy the branch `feature/admin-panel-v2` and open
+3. Deploy the configured `main` branch and open
    `https://your-host/admin/login`.
 
 ## Included pages
@@ -40,6 +40,9 @@ the login page.
 - Security: admin session settings and masked Spide cookie management.
 - Backup Center: create/download/restore JSON config backups. Spide cookie is
   deliberately excluded from backups and preserved during restore.
+- Automation Center: configurable Telegram polling and daily top schedule (UTC).
+- Notification Center: Discord startup/disconnect/command-error alerts and a test send.
+- Moderation Center: timeout, kick, ban and unban with permission and role-hierarchy checks.
 
 ## Security notes
 
@@ -48,8 +51,8 @@ the login page.
 - The panel uses Flask signed sessions, HttpOnly/SameSite cookies, CSRF
   tokens on state-changing forms, login checks, and POST-only admin actions.
 - Existing legacy endpoints are blocked by a before-request guard.
-- User/server pages are inspection-only. No ban/kick/role mutation controls
-  are exposed in this first release.
+- Moderation is disabled by default. Set `MODERATION_ENABLED=1` only after
+  granting the bot the relevant Discord permissions; action attempts are audited.
 - Analytics and logs are process-memory based; they reset on restart. Persistent
   analytics require a database/event store in a later iteration.
 - Discord member listing depends on the Members intent and the bot's member
