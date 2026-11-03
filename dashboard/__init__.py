@@ -1,0 +1,1 @@
+"""SpideBot dashboard package."""
