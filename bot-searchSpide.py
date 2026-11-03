@@ -197,7 +197,7 @@ async def on_member_join(member):
 # WEB SERVER (FLASK)
 # ==============================
 web_app = Flask(__name__)
-web_app.secret_key = 'spide_super_secret_key'
+# Session secret is initialized by dashboard.admin_panel using SECRET_KEY or a local key file.
 
 @web_app.route('/')
 def index():
