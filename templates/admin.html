@@ -9,6 +9,10 @@
 *{box-sizing:border-box}body{font-family:Inter,sans-serif;background:var(--bg);color:#f4f5f7}
 .sidebar{background:#0d0f12;border-right:1px solid var(--line)}.navlink{display:flex;gap:12px;align-items:center;padding:11px 13px;border-radius:12px;color:#a6acb7;font-size:13px;font-weight:600;transition:.2s}.navlink:hover,.navlink.active{background:#24170f;color:#ff9a55}.navlink.active{box-shadow:inset 3px 0 var(--orange)}
 .panel{background:linear-gradient(145deg,#15181e,#101216);border:1px solid var(--line);border-radius:17px}.metric{font-size:28px;font-weight:800;letter-spacing:-1px}.muted{color:var(--muted)}.accent{color:var(--orange)}.btn{background:var(--orange);color:#17100b;border-radius:10px;padding:10px 14px;font-size:12px;font-weight:800}.btn:hover{filter:brightness(1.1)}.btn2{background:#20242b;border:1px solid #303641;color:#e8eaf0;border-radius:10px;padding:9px 13px;font-size:12px;font-weight:700}.field{width:100%;background:#0b0d10;border:1px solid #2a303a;border-radius:10px;padding:11px;color:#eee;outline:none}.field:focus{border-color:var(--orange)}th{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#7f8793;text-align:left;padding:12px}td{padding:13px 12px;border-top:1px solid #242831;font-size:12px}.pill{padding:5px 9px;border-radius:99px;font-size:10px;font-weight:800;background:#20252c;color:#b7bec9}.pill.ok{background:#123323;color:#5cdb91}.pill.warn{background:#38270f;color:#ffbb64}.pill.err{background:#3b1719;color:#ff8585}
+.center-tab{display:inline-flex;align-items:center;gap:9px;padding:10px 15px;border:1px solid #2a303a;border-radius:11px;background:#111317;color:#aeb5c0;font-size:12px;font-weight:700;transition:.18s}
+.center-tab:hover{border-color:#8c4b27;color:#ffd0ad;background:#1b1511}
+.center-tab.active{border-color:#b75f2b;background:#2a190f;color:#ff9a55;box-shadow:inset 0 -2px #ff8738}
+
 @media(max-width:800px){.sidebar{display:none}.main{padding:18px!important}.topbar{padding:0 18px!important}}
 </style></head><body>
 <div class="min-h-screen flex">
@@ -17,9 +21,11 @@
  <div class="text-[9px] tracking-[2px] muted font-bold px-3 mb-2">WORKSPACE</div>
  {% for endpoint,label,ico in [('admin.overview','Обзор','▦'),('admin.analytics','Аналитика','⌁'),('admin.leaderboard','Топ пользователей','♛'),('admin.users','Пользователи','♙'),('admin.servers','Discord-серверы','▣')] %}
  <a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{ url_for(endpoint) }}"><span class="text-lg accent w-5">{{ ico }}</span>{{ label }}</a>{% endfor %}
- <a class="navlink {% if page=='moderation' %}active{% endif %}" href="{{ url_for('admin.moderation') }}"><span class="text-lg accent w-5">⚖</span>Moderation Center</a>
+ <div class="text-[9px] tracking-[2px] muted font-bold px-3 mt-7 mb-2">CENTERS</div>
+ {% for endpoint,label,ico in [('admin.automation','Automation Center','◷'),('admin.notifications','Notification Center','♧'),('admin.moderation','Moderation Center','⚖')] %}
+ <a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{ url_for(endpoint) }}"><span class="text-lg accent w-5">{{ ico }}</span>{{ label }}</a>{% endfor %}
  <div class="text-[9px] tracking-[2px] muted font-bold px-3 mt-7 mb-2">MANAGEMENT</div>
- {% for endpoint,label,ico in [('admin.telegram','Telegram Manager','➤'),('admin.automation','Automation Center','◷'),('admin.notifications','Notification Center','♧'),('admin.logs','Логи и события','⌘'),('admin.security','Безопасность','◇'),('admin.backup','Backup Center','▤')] %}
+ {% for endpoint,label,ico in [('admin.telegram','Telegram Manager','➤'),('admin.logs','Логи и события','⌘'),('admin.security','Безопасность','◇'),('admin.backup','Backup Center','▤')] %}
  <a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{ url_for(endpoint) }}"><span class="text-lg accent w-5">{{ ico }}</span>{{ label }}</a>{% endfor %}
  <div class="mt-auto panel p-3"><div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full {% if status %}bg-green-400{% else %}bg-red-400{% endif %}"></span><span class="text-xs font-bold">Discord {{ 'Online' if status else 'Offline' }}</span></div><div class="text-[10px] muted mt-2">SpideBot Admin v2.0</div></div>
 </aside>
@@ -30,6 +36,13 @@
 </header>
 <main class="main p-8 max-w-[1500px] mx-auto space-y-6">
 {% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="panel p-3 text-sm {{ 'text-green-300' if category=='success' else 'text-orange-300' }}">{{ message }}</div>{% endfor %}{% endwith %}
+{% if page in ['automation','notifications','moderation'] %}
+<nav class="center-tabs flex flex-wrap gap-2 border-b border-[#242831] pb-4" aria-label="Центры управления">
+  <a href="{{ url_for('admin.automation') }}" class="center-tab {% if page=='automation' %}active{% endif %}">◷ Automation</a>
+  <a href="{{ url_for('admin.notifications') }}" class="center-tab {% if page=='notifications' %}active{% endif %}">♧ Notifications</a>
+  <a href="{{ url_for('admin.moderation') }}" class="center-tab {% if page=='moderation' %}active{% endif %}">⚖ Moderation</a>
+</nav>
+{% endif %}
 {% if page=='overview' %}
 <div class="flex flex-wrap justify-between items-end gap-3"><div><h2 class="text-2xl font-extrabold">Добро пожаловать в Spide<span class="accent">.</span></h2><p class="muted text-xs mt-2">Состояние инфраструктуры и быстрый доступ к управлению.</p></div><span class="text-xs muted">Обновление при перезагрузке страницы</span></div>
 <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
