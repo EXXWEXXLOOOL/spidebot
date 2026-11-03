@@ -5,37 +5,301 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script><script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-:root{--bg:#090a0c;--panel:#111317;--panel2:#171a20;--line:#242831;--muted:#8b929e;--orange:#ff8738}
-*{box-sizing:border-box}body{font-family:Inter,sans-serif;background:var(--bg);color:#f4f5f7}
-.sidebar{background:#0d0f12;border-right:1px solid var(--line)}.navlink{display:flex;gap:12px;align-items:center;padding:11px 13px;border-radius:12px;color:#a6acb7;font-size:13px;font-weight:600;transition:.2s}.navlink:hover,.navlink.active{background:#24170f;color:#ff9a55}.navlink.active{box-shadow:inset 3px 0 var(--orange)}
-.panel{background:linear-gradient(145deg,#15181e,#101216);border:1px solid var(--line);border-radius:17px}.metric{font-size:28px;font-weight:800;letter-spacing:-1px}.muted{color:var(--muted)}.accent{color:var(--orange)}.btn{background:var(--orange);color:#17100b;border-radius:10px;padding:10px 14px;font-size:12px;font-weight:800}.btn:hover{filter:brightness(1.1)}.btn2{background:#20242b;border:1px solid #303641;color:#e8eaf0;border-radius:10px;padding:9px 13px;font-size:12px;font-weight:700}.field{width:100%;background:#0b0d10;border:1px solid #2a303a;border-radius:10px;padding:11px;color:#eee;outline:none}.field:focus{border-color:var(--orange)}th{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#7f8793;text-align:left;padding:12px}td{padding:13px 12px;border-top:1px solid #242831;font-size:12px}.pill{padding:5px 9px;border-radius:99px;font-size:10px;font-weight:800;background:#20252c;color:#b7bec9}.pill.ok{background:#123323;color:#5cdb91}.pill.warn{background:#38270f;color:#ffbb64}.pill.err{background:#3b1719;color:#ff8585}
-.center-tab{display:inline-flex;align-items:center;gap:9px;padding:10px 15px;border:1px solid #2a303a;border-radius:11px;background:#111317;color:#aeb5c0;font-size:12px;font-weight:700;transition:.18s}
-.center-tab:hover{border-color:#8c4b27;color:#ffd0ad;background:#1b1511}
-.center-tab.active{border-color:#b75f2b;background:#2a190f;color:#ff9a55;box-shadow:inset 0 -2px #ff8738}
-
-@media(max-width:800px){.sidebar{display:none}.main{padding:18px!important}.topbar{padding:0 18px!important}}
+:root{
+  color-scheme:dark;
+  --bg:#121413;
+  --sidebar:#191c1a;
+  --surface:#1d211e;
+  --surface-raised:#242925;
+  --surface-hover:#292f2a;
+  --border:#343b35;
+  --border-soft:#2b312c;
+  --text:#eeefe9;
+  --muted:#a4aaa1;
+  --muted-2:#7f887f;
+  --orange:#df895b;
+  --orange-hover:#eba077;
+  --orange-soft:#38271f;
+  --green:#78b994;
+  --yellow:#d7ad70;
+  --red:#df8580;
+}
+*{box-sizing:border-box}
+html{background:var(--bg);scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+button,input,select,textarea{font:inherit}
+::selection{background:#69432f;color:#fff}
+.sidebar{
+  width:248px!important;flex:0 0 248px;
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+  padding:22px 15px 16px!important;
+  background:var(--sidebar);
+  border-right:1px solid var(--border);
+}
+.brand{display:flex;align-items:center;gap:11px;padding:2px 8px 24px}
+.brand-mark{
+  width:34px;height:34px;display:grid;place-items:center;
+  border:1px solid #80583f;border-radius:8px;
+  color:#f2b28b;background:#2a211c;
+  font-size:16px;font-weight:750;letter-spacing:-.05em;
+}
+.brand-name{font-size:14px;font-weight:750;letter-spacing:.08em;color:var(--text)}
+.brand-caption{margin-top:1px;color:var(--muted-2);font-size:9px;letter-spacing:.16em;text-transform:uppercase}
+.nav-section{
+  margin:18px 10px 7px;color:var(--muted-2);
+  font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+}
+.navlink{
+  display:flex;align-items:center;min-height:36px;
+  margin:2px 0;padding:8px 11px 8px 13px;
+  border:1px solid transparent;border-radius:7px;
+  color:#bdc2ba;font-size:13px;font-weight:520;
+  transition:background .14s ease,color .14s ease,border-color .14s ease;
+}
+.navlink:hover{background:#222723;color:var(--text)}
+.navlink.active{
+  background:var(--orange-soft);border-color:#59402f;
+  color:#f3bd9b;box-shadow:inset 2px 0 var(--orange);
+}
+.sidebar-status{
+  margin-top:auto;padding:12px 10px 3px;border-top:1px solid var(--border-soft);
+  color:var(--muted);font-size:11px;
+}
+.status-dot{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;vertical-align:1px;background:var(--green)}
+.status-dot.offline{background:var(--red)}
+.topbar{
+  height:66px!important;min-height:66px;
+  padding:0 32px!important;
+  background:rgba(25,28,26,.96)!important;
+  border-bottom:1px solid var(--border)!important;
+  backdrop-filter:blur(12px);
+}
+.topbar-kicker{font-size:10px;color:var(--muted-2);letter-spacing:.12em;font-weight:650;text-transform:uppercase}
+.topbar h1{margin:2px 0 0;font-size:16px;line-height:1.25;font-weight:650;letter-spacing:-.015em}
+.topbar-actions{display:flex;align-items:center;gap:15px}
+.admin-name{color:var(--muted);font-size:12px}
+.main{
+  width:100%;max-width:1400px!important;
+  padding:28px 32px 46px!important;
+}
+.panel{
+  background:var(--surface)!important;
+  border:1px solid var(--border)!important;
+  border-radius:9px!important;
+  box-shadow:none!important;
+}
+.metric{font-size:29px!important;font-weight:650!important;letter-spacing:-.055em!important;color:var(--text)}
+.metric-card{min-width:0;padding:17px 18px!important}
+.metric-label{color:var(--muted);font-size:12px;font-weight:550}
+.metric-sub{margin-top:5px;color:var(--muted-2);font-size:11px}
+.accent{color:var(--orange)!important}
+.muted{color:var(--muted)!important}
+.page-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:3px}
+.page-intro h2{margin:0;font-size:23px;line-height:1.25;font-weight:650;letter-spacing:-.04em}
+.page-intro p{margin:6px 0 0;color:var(--muted);font-size:13px}
+.eyebrow{margin-bottom:7px;color:var(--muted-2);font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+.section-head h3,.panel h3{margin:0;color:var(--text);font-size:14px;font-weight:650;letter-spacing:-.01em}
+.section-head p{margin:4px 0 0;color:var(--muted);font-size:12px}
+.panel p{line-height:1.55}
+.btn,.btn2{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  min-height:35px;padding:8px 13px;border-radius:7px;
+  font-size:12px;font-weight:650;cursor:pointer;
+  transition:background .14s ease,border-color .14s ease,color .14s ease;
+}
+.btn{
+  color:#211710;background:var(--orange);
+  border:1px solid var(--orange);
+}
+.btn:hover{background:var(--orange-hover);border-color:var(--orange-hover)}
+.btn2{
+  color:#d4d8d0;background:#292e2a;border:1px solid #3b433c;
+}
+.btn2:hover{background:#333a34;border-color:#4a544b}
+.btn:disabled,.btn2:disabled{opacity:.45;cursor:not-allowed}
+.field{
+  display:block;width:100%;min-height:38px;padding:8px 11px;
+  color:var(--text);background:#151916;
+  border:1px solid #3a423b;border-radius:7px;outline:none;
+  font-size:13px;transition:border-color .14s ease,box-shadow .14s ease;
+}
+.field:focus{border-color:var(--orange);box-shadow:0 0 0 2px rgba(223,137,91,.13)}
+.field::placeholder{color:#778077}
+textarea.field{resize:vertical}
+input[type=checkbox]{accent-color:var(--orange);cursor:pointer}
+.pill{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:4px 7px;border:1px solid #424941;border-radius:5px;
+  color:#c5cbc2;background:#252b26;font-size:10px;font-weight:700;
+  letter-spacing:.025em;white-space:nowrap;
+}
+.pill.ok{color:#9acaaa;background:#202f25;border-color:#385442}
+.pill.warn{color:#e1bc83;background:#342b1e;border-color:#59472e}
+.pill.err{color:#e8a09b;background:#352321;border-color:#60403d}
+table{width:100%;border-collapse:collapse}
+th{
+  padding:11px 13px;color:var(--muted-2);background:#191d1a;
+  border-bottom:1px solid var(--border);
+  font-size:10px;font-weight:700;letter-spacing:.08em;text-align:left;text-transform:uppercase;
+}
+td{padding:12px 13px;color:#d8dcd4;border-top:1px solid var(--border-soft);font-size:12px;vertical-align:middle}
+tbody tr:hover{background:rgba(255,255,255,.018)}
+.center-tabs{
+  display:flex;flex-wrap:wrap;gap:3px!important;
+  border-bottom:1px solid var(--border)!important;padding-bottom:0!important;
+}
+.center-tab{
+  display:inline-flex;align-items:center;min-height:39px;
+  padding:8px 13px;margin-bottom:-1px;
+  border:0!important;border-bottom:2px solid transparent!important;
+  border-radius:0!important;background:transparent!important;
+  color:var(--muted);font-size:12px;font-weight:600;
+}
+.center-tab:hover{color:var(--text);background:transparent!important}
+.center-tab.active{
+  color:#f0b38c!important;border-color:var(--orange)!important;
+  box-shadow:none!important;
+}
+.center-tab:focus-visible,.navlink:focus-visible,.btn:focus-visible,.btn2:focus-visible{
+  outline:2px solid var(--orange);outline-offset:2px;
+}
+.alert{
+  padding:11px 14px;border:1px solid var(--border);border-radius:7px;
+  background:#202521;font-size:13px;
+}
+.service-list{border-top:1px solid var(--border-soft)}
+.service-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  min-height:54px;padding:10px 2px;border-bottom:1px solid var(--border-soft);
+}
+.service-row:last-child{border-bottom:0}
+.service-name{font-size:13px;font-weight:600;color:var(--text)}
+.service-desc{margin-top:2px;font-size:11px;color:var(--muted)}
+.service-state{font-size:11px;font-weight:650;color:var(--green)}
+.service-state.check{color:var(--yellow)}
+.action-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  min-height:42px;padding:8px 0;border-bottom:1px solid var(--border-soft);
+}
+.action-row:last-child{border-bottom:0}
+.action-title{font-size:12px;font-weight:600;color:var(--text)}
+.action-desc{margin-top:2px;font-size:11px;color:var(--muted)}
+.event-line{
+  padding:9px 0;border-bottom:1px solid var(--border-soft);
+  color:#b8c0b7;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:11px;line-height:1.5;overflow-wrap:anywhere;
+}
+.event-line:last-child{border-bottom:0}
+.mobile-nav{display:none}
+.bg-\[\#0b0d10\],.bg-\[\#0c0e11\],.bg-\[\#171a20\],.bg-\[\#20242b\]{
+  background:var(--surface-raised)!important;
+}
+.border-\[\#252a32\],.border-\[\#242831\],.border-\[\#303641\]{
+  border-color:var(--border-soft)!important;
+}
+.rounded-xl{border-radius:8px!important}
+.rounded-lg{border-radius:7px!important}
+.text-\[9px\]{font-size:10px!important}
+.text-\[10px\]{font-size:11px!important}
+.text-\[11px\]{font-size:12px!important}
+.text-xs{font-size:12px!important}
+footer{margin-top:24px;color:var(--muted-2);font-size:10px}
+@media(max-width:1050px){
+  .sidebar{width:220px!important;flex-basis:220px}
+  .topbar{padding:0 23px!important}
+  .main{padding:24px!important}
+}
+@media(max-width:760px){
+  .sidebar{display:none!important}
+  .topbar{height:60px!important;min-height:60px;padding:0 16px!important}
+  .topbar-kicker{font-size:9px}
+  .topbar h1{font-size:15px}
+  .topbar-actions{gap:9px}
+  .admin-name{display:none}
+  .mobile-nav{
+    display:flex;gap:3px;overflow-x:auto;white-space:nowrap;
+    padding:8px 14px;background:var(--sidebar);
+    border-bottom:1px solid var(--border);
+    scrollbar-width:thin;
+  }
+  .mobile-nav a{
+    flex:0 0 auto;padding:7px 10px;border-radius:6px;
+    color:var(--muted);font-size:11px;font-weight:600;
+  }
+  .mobile-nav a.active{color:#f0b38c;background:var(--orange-soft)}
+  .main{padding:19px 15px 32px!important}
+  .page-intro{align-items:flex-start;flex-direction:column;gap:6px}
+  .page-intro h2{font-size:21px}
+  .metric-card{padding:14px!important}
+  .metric{font-size:25px!important}
+  .panel{border-radius:8px!important}
+  .center-tab{padding:7px 10px;font-size:11px}
+  th,td{padding:10px 9px}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
+}
 </style></head><body>
 <div class="min-h-screen flex">
-<aside class="sidebar w-64 shrink-0 p-5 hidden md:flex md:flex-col">
- <a href="{{ url_for('admin.overview') }}" class="flex items-center gap-3 px-2 mb-9"><div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style="background:#2a190e;color:#ff8738">🕷</div><div><div class="font-extrabold tracking-wide">SPIDE<span class="accent">BOT</span></div><div class="text-[9px] tracking-[2px] muted">CONTROL CENTER</div></div></a>
- <div class="text-[9px] tracking-[2px] muted font-bold px-3 mb-2">WORKSPACE</div>
- {% for endpoint,label,ico in [('admin.overview','Обзор','▦'),('admin.analytics','Аналитика','⌁'),('admin.leaderboard','Топ пользователей','♛'),('admin.users','Пользователи','♙'),('admin.servers','Discord-серверы','▣')] %}
- <a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{ url_for(endpoint) }}"><span class="text-lg accent w-5">{{ ico }}</span>{{ label }}</a>{% endfor %}
- <div class="text-[9px] tracking-[2px] muted font-bold px-3 mt-7 mb-2">CENTERS</div>
- {% for endpoint,label,ico in [('admin.automation','Automation Center','◷'),('admin.notifications','Notification Center','♧'),('admin.moderation','Moderation Center','⚖')] %}
- <a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{ url_for(endpoint) }}"><span class="text-lg accent w-5">{{ ico }}</span>{{ label }}</a>{% endfor %}
- <div class="text-[9px] tracking-[2px] muted font-bold px-3 mt-7 mb-2">MANAGEMENT</div>
- {% for endpoint,label,ico in [('admin.telegram','Telegram Manager','➤'),('admin.logs','Логи и события','⌘'),('admin.security','Безопасность','◇'),('admin.backup','Backup Center','▤')] %}
- <a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{ url_for(endpoint) }}"><span class="text-lg accent w-5">{{ ico }}</span>{{ label }}</a>{% endfor %}
- <div class="mt-auto panel p-3"><div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full {% if status %}bg-green-400{% else %}bg-red-400{% endif %}"></span><span class="text-xs font-bold">Discord {{ 'Online' if status else 'Offline' }}</span></div><div class="text-[10px] muted mt-2">SpideBot Admin v2.0</div></div>
+<aside class="sidebar hidden md:flex md:flex-col">
+ <a href="{{ url_for('admin.overview') }}" class="brand">
+  <span class="brand-mark">S</span>
+  <span><span class="brand-name">SPIDE<span class="accent">BOT</span></span><span class="brand-caption block">Control panel</span></span>
+ </a>
+
+ <div class="nav-section">Обзор</div>
+ <a class="navlink {% if request.endpoint=='admin.overview' %}active{% endif %}" href="{{ url_for('admin.overview') }}">Обзор</a>
+ <a class="navlink {% if request.endpoint=='admin.analytics' %}active{% endif %}" href="{{ url_for('admin.analytics') }}">Аналитика</a>
+ <a class="navlink {% if request.endpoint=='admin.leaderboard' %}active{% endif %}" href="{{ url_for('admin.leaderboard') }}">Топ пользователей</a>
+
+ <div class="nav-section">Discord</div>
+ <a class="navlink {% if request.endpoint=='admin.users' %}active{% endif %}" href="{{ url_for('admin.users') }}">Пользователи</a>
+ <a class="navlink {% if request.endpoint=='admin.servers' %}active{% endif %}" href="{{ url_for('admin.servers') }}">Серверы</a>
+ <a class="navlink {% if request.endpoint=='admin.moderation' %}active{% endif %}" href="{{ url_for('admin.moderation') }}">Модерация</a>
+
+ <div class="nav-section">Автоматизация</div>
+ <a class="navlink {% if request.endpoint=='admin.automation' %}active{% endif %}" href="{{ url_for('admin.automation') }}">Планировщик</a>
+ <a class="navlink {% if request.endpoint=='admin.notifications' %}active{% endif %}" href="{{ url_for('admin.notifications') }}">Уведомления</a>
+ <a class="navlink {% if request.endpoint=='admin.telegram' %}active{% endif %}" href="{{ url_for('admin.telegram') }}">Telegram-каналы</a>
+
+ <div class="nav-section">Система</div>
+ <a class="navlink {% if request.endpoint=='admin.logs' %}active{% endif %}" href="{{ url_for('admin.logs') }}">Журнал событий</a>
+ <a class="navlink {% if request.endpoint=='admin.security' %}active{% endif %}" href="{{ url_for('admin.security') }}">Безопасность</a>
+ <a class="navlink {% if request.endpoint=='admin.backup' %}active{% endif %}" href="{{ url_for('admin.backup') }}">Резервные копии</a>
+
+ <div class="sidebar-status"><span class="status-dot {% if not status %}offline{% endif %}"></span>Discord {{ 'подключён' if status else 'не подключён' }}<div class="mt-1" style="color:var(--muted-2)">SpideBot · Admin</div></div>
 </aside>
 <div class="flex-1 min-w-0">
-<header class="topbar h-[76px] border-b border-[#242831] flex items-center justify-between px-8 sticky top-0 z-20" style="background:#090a0ceF;backdrop-filter:blur(14px)">
- <div><div class="text-[10px] muted tracking-[2px] font-bold">SPIDE / CONTROL PANEL</div><h1 class="text-lg font-extrabold mt-1">{{ title_map.get(page,'Admin') }}</h1></div>
- <div class="flex items-center gap-3"><span class="pill {% if status %}ok{% else %}err{% endif %}">{{ '● ONLINE' if status else '● OFFLINE' }}</span><span class="hidden sm:block text-xs muted">{{ admin_username }}</span><form method="post" action="{{ url_for('admin.logout') }}"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn2">Выйти</button></form></div>
+<header class="topbar flex items-center justify-between sticky top-0 z-20">
+ <div><div class="topbar-kicker">SpideBot / Панель управления</div><h1>{{ title_map.get(page,'Admin') }}</h1></div>
+ <div class="topbar-actions"><span class="pill {% if status %}ok{% else %}err{% endif %}"><span class="status-dot {% if not status %}offline{% endif %}" style="width:6px;height:6px;margin:0"></span>{{ 'Онлайн' if status else 'Офлайн' }}</span><span class="admin-name">{{ admin_username }}</span><form method="post" action="{{ url_for('admin.logout') }}"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn2">Выйти</button></form></div>
 </header>
+<nav class="mobile-nav" aria-label="Основная навигация">
+ <a class="{% if request.endpoint=='admin.overview' %}active{% endif %}" href="{{ url_for('admin.overview') }}">Обзор</a>
+ <a class="{% if request.endpoint=='admin.analytics' %}active{% endif %}" href="{{ url_for('admin.analytics') }}">Аналитика</a>
+ <a class="{% if request.endpoint=='admin.leaderboard' %}active{% endif %}" href="{{ url_for('admin.leaderboard') }}">Топ</a>
+ <a class="{% if request.endpoint=='admin.users' %}active{% endif %}" href="{{ url_for('admin.users') }}">Пользователи</a>
+ <a class="{% if request.endpoint=='admin.servers' %}active{% endif %}" href="{{ url_for('admin.servers') }}">Серверы</a>
+ <a class="{% if request.endpoint=='admin.automation' %}active{% endif %}" href="{{ url_for('admin.automation') }}">Планировщик</a>
+ <a class="{% if request.endpoint=='admin.notifications' %}active{% endif %}" href="{{ url_for('admin.notifications') }}">Уведомления</a>
+ <a class="{% if request.endpoint=='admin.moderation' %}active{% endif %}" href="{{ url_for('admin.moderation') }}">Модерация</a>
+ <a class="{% if request.endpoint=='admin.telegram' %}active{% endif %}" href="{{ url_for('admin.telegram') }}">Telegram</a>
+ <a class="{% if request.endpoint=='admin.logs' %}active{% endif %}" href="{{ url_for('admin.logs') }}">Логи</a>
+ <a class="{% if request.endpoint=='admin.security' %}active{% endif %}" href="{{ url_for('admin.security') }}">Защита</a>
+ <a class="{% if request.endpoint=='admin.backup' %}active{% endif %}" href="{{ url_for('admin.backup') }}">Backup</a>
+</nav>
 <main class="main p-8 max-w-[1500px] mx-auto space-y-6">
-{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="panel p-3 text-sm {{ 'text-green-300' if category=='success' else 'text-orange-300' }}">{{ message }}</div>{% endfor %}{% endwith %}
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="alert {{ 'text-green-300' if category=='success' else 'text-orange-300' }}">{{ message }}</div>{% endfor %}{% endwith %}
 {% if page in ['automation','notifications','moderation'] %}
 <nav class="center-tabs flex flex-wrap gap-2 border-b border-[#242831] pb-4" aria-label="Центры управления">
   <a href="{{ url_for('admin.automation') }}" class="center-tab {% if page=='automation' %}active{% endif %}">◷ Automation</a>
@@ -44,19 +308,49 @@
 </nav>
 {% endif %}
 {% if page=='overview' %}
-<div class="flex flex-wrap justify-between items-end gap-3"><div><h2 class="text-2xl font-extrabold">Добро пожаловать в Spide<span class="accent">.</span></h2><p class="muted text-xs mt-2">Состояние инфраструктуры и быстрый доступ к управлению.</p></div><span class="text-xs muted">Обновление при перезагрузке страницы</span></div>
-<div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
-{% for label,value,sub in [('Discord-серверы',guild_count,'Подключено к боту'),('Участники',member_count,'Суммарно по доступным серверам'),('Задержка',latency|string+' ms','Discord Gateway'),('Ошибки в буфере',error_count|string,'Последние записи логов')] %}
-<div class="panel p-5"><div class="text-xs muted">{{ label }}</div><div class="metric mt-3">{{ value }}</div><div class="text-[10px] muted mt-2">{{ sub }}</div></div>{% endfor %}
+<div class="page-intro">
+ <div><div class="eyebrow">Сводка системы</div><h2>Обзор системы</h2><p>Состояние бота и основные показатели в одном месте.</p></div>
+ <span class="text-xs muted">Данные на момент загрузки страницы</span>
 </div>
-<div class="grid lg:grid-cols-3 gap-4"><section class="panel p-5 lg:col-span-2"><div class="flex justify-between"><div><h3 class="font-bold">Состояние сервисов</h3><p class="text-xs muted mt-1">Текущая доступность компонентов</p></div><span class="pill ok">LIVE STATUS</span></div>
-<div class="grid sm:grid-cols-2 gap-3 mt-5">{% for label,desc,ok in [('Discord Gateway','Подключение к Discord',status),('Telegram Parser','Фоновая задача парсинга',status),('Spide Cookie','Наличие cookie для API',cookie_configured),('Flask Admin','Веб-панель активна',true)] %}<div class="rounded-xl bg-[#0c0e11] border border-[#252a32] p-4 flex justify-between"><div><div class="text-sm font-bold">{{ label }}</div><div class="text-[10px] muted mt-1">{{ desc }}</div></div><span class="pill {{ 'ok' if ok else 'warn' }}">{{ 'ACTIVE' if ok else 'CHECK' }}</span></div>{% endfor %}</div></section>
-<section class="panel p-5"><h3 class="font-bold">Быстрые действия</h3><p class="text-xs muted mt-1">Запуск фоновых задач</p><div class="space-y-3 mt-5">
-{% for action,label,desc in [('checktg','Проверить Telegram','Проверить новые публикации'),('top','Опубликовать топ','Отправить рейтинг в Discord'),('cookie','Проверить Spide cookie','Проверка API авторизации')] %}
-<form method="post" action="{{ url_for('admin.run_action',action_name=action) }}"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn2 w-full text-left">{{ label }} <span class="accent float-right">↗</span></button><div class="text-[10px] muted mt-1">{{ desc }}</div></form>{% endfor %}
-</div></section></div>
-<section class="panel p-5"><h3 class="font-bold">Последние события</h3><div class="mt-3 space-y-2">{% for item in recent_events|reverse %}<div class="text-xs font-mono muted border-b border-[#252a32] pb-2">{{ item }}</div>{% else %}<div class="text-xs muted">Событий пока нет.</div>{% endfor %}</div></section>
-<section id="permissions" class="panel p-5"><h3 class="font-bold">Права Discord-команд</h3><p class="text-xs muted mt-1 mb-4">Если роли не выбраны, команда остаётся доступной всем. Администраторы Discord сохраняют доступ.</p><form method="post" action="{{ url_for('admin.update_permissions') }}" class="grid md:grid-cols-3 gap-3"><input type="hidden" name="_csrf" value="{{ csrf }}"><select class="field" name="guild_id" id="guildSelect" required><option value="">Выберите сервер</option>{% for g in guilds %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}</select><select class="field" name="command_name">{% for cmd in ['search','top','links','checktg','rules','setup_roles','commands'] %}<option value="{{ cmd }}">!{{ cmd }}</option>{% endfor %}</select><select class="field" name="roles" id="rolesSelect" multiple size="3"><option>Сначала выберите сервер</option></select><button class="btn md:col-span-3 justify-self-start">Сохранить права</button></form></section>
+<div class="grid grid-cols-2 xl:grid-cols-4 gap-3">
+ {% for label,value,sub in [('Discord-серверы',guild_count,'Подключено к боту'),('Участники',member_count,'По доступному кэшу серверов'),('Задержка',latency|string+' мс','Discord Gateway'),('Ошибки',error_count|string,'В текущем буфере логов')] %}
+ <section class="panel metric-card"><div class="metric-label">{{ label }}</div><div class="metric mt-2">{{ value }}</div><div class="metric-sub">{{ sub }}</div></section>
+ {% endfor %}
+</div>
+<div class="grid lg:grid-cols-3 gap-4">
+ <section class="panel p-5 lg:col-span-2">
+  <div class="section-head"><div><h3>Состояние сервисов</h3><p>Доступность основных компонентов</p></div><span class="pill {% if status %}ok{% else %}err{% endif %}">{{ 'Бот в сети' if status else 'Бот офлайн' }}</span></div>
+  <div class="service-list">
+   {% for label,desc,ok in [('Discord Gateway','Соединение с Discord',status),('Telegram Parser','Фоновый модуль бота',status),('Spide Cookie','Доступ к Spide API',cookie_configured),('Flask Admin','Веб-панель управления',true)] %}
+   <div class="service-row"><div><div class="service-name">{{ label }}</div><div class="service-desc">{{ desc }}</div></div><span class="service-state {{ 'check' if not ok else '' }}">{{ 'Работает' if ok else 'Проверить' }}</span></div>
+   {% endfor %}
+  </div>
+ </section>
+ <section class="panel p-5">
+  <div class="section-head"><div><h3>Быстрые действия</h3><p>Ручной запуск задач</p></div></div>
+  {% for action,label,desc in [('checktg','Проверить Telegram','Получить новые публикации'),('top','Опубликовать топ','Отправить рейтинг в Discord'),('cookie','Проверить Spide Cookie','Проверить доступ к API')] %}
+  <form method="post" action="{{ url_for('admin.run_action',action_name=action) }}" class="action-row">
+   <input type="hidden" name="_csrf" value="{{ csrf }}">
+   <div><div class="action-title">{{ label }}</div><div class="action-desc">{{ desc }}</div></div>
+   <button class="btn2" type="submit">Запустить</button>
+  </form>
+  {% endfor %}
+ </section>
+</div>
+<section class="panel p-5">
+ <div class="section-head"><div><h3>Последние события</h3><p>Последние записи из журнала приложения</p></div><a class="btn2" href="{{ url_for('admin.logs') }}">Открыть журнал</a></div>
+ <div>{% for item in recent_events|reverse %}<div class="event-line">{{ item }}</div>{% else %}<div class="text-xs muted py-3">Событий пока нет.</div>{% endfor %}</div>
+</section>
+<section id="permissions" class="panel p-5">
+ <div class="section-head"><div><h3>Права Discord-команд</h3><p>Настройте, каким ролям доступны команды бота. Администраторы сервера сохраняют доступ.</p></div></div>
+ <form method="post" action="{{ url_for('admin.update_permissions') }}" class="grid md:grid-cols-3 gap-3">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <select class="field" name="guild_id" id="guildSelect" required><option value="">Выберите сервер</option>{% for g in guilds %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}</select>
+  <select class="field" name="command_name">{% for cmd in ['search','top','links','checktg','rules','setup_roles','commands'] %}<option value="{{ cmd }}">!{{ cmd }}</option>{% endfor %}</select>
+  <select class="field" name="roles" id="rolesSelect" multiple size="3"><option>Сначала выберите сервер</option></select>
+  <button class="btn md:col-span-3 justify-self-start">Сохранить права</button>
+ </form>
+</section>
 {% elif page=='analytics' %}
 <div class="grid sm:grid-cols-3 gap-4">{% for k,v in level_counts.items() %}<div class="panel p-5"><div class="muted text-xs">{{ k }}</div><div class="metric mt-2">{{ v }}</div></div>{% endfor %}</div><section class="panel p-5"><h3 class="font-bold">Распределение событий</h3><p class="text-xs muted mt-1">По последним {{ sample_size }} сообщениям в памяти процесса.</p><div class="max-w-lg mx-auto mt-4"><canvas id="levelsChart" height="220"></canvas></div></section>
 {% elif page=='leaderboard' %}
@@ -106,7 +400,7 @@
 <section class="panel p-5"><h3 class="font-bold">Существующие копии</h3><div class="mt-3 space-y-2">{% for f in backup_files %}<div class="flex flex-wrap items-center justify-between gap-2 bg-[#0b0d10] rounded-xl p-3"><div><div class="text-xs font-bold">{{ f.name }}</div><div class="muted text-[10px]">{{ f.modified }} · {{ (f.size/1024)|round(1) }} KB</div></div><a class="btn2" href="{{ url_for('admin.download_backup',filename=f.name) }}">Скачать</a></div>{% else %}<p class="muted text-xs">Резервных копий пока нет.</p>{% endfor %}</div></section>
 <section class="panel p-5"><h3 class="font-bold">Восстановить настройки</h3><p class="muted text-xs mt-1">Загрузите ранее созданный JSON backup. Cookie останутся текущими.</p><form method="post" enctype="multipart/form-data" action="{{ url_for('admin.restore_backup') }}" class="mt-3 flex flex-wrap gap-3"><input type="hidden" name="_csrf" value="{{ csrf }}"><input type="file" name="backup_file" accept=".json,application/json" class="field max-w-lg" required><button class="btn" onclick="return confirm('Заменить текущие настройки из резервной копии?')">Восстановить</button></form></section>
 {% endif %}
-<footer class="text-[10px] muted text-center py-4">SPIDEBOT ADMIN V2.0 · BLACK / ORANGE · Flask</footer>
+<footer class="text-center py-4">SpideBot Admin · Панель управления</footer>
 </main></div></div>
 <script>
 const guildSelect=document.getElementById('guildSelect');if(guildSelect){guildSelect.addEventListener('change',async()=>{const s=document.getElementById('rolesSelect');s.innerHTML='<option>Загрузка…</option>';try{const r=await fetch('/admin/api/roles/'+guildSelect.value);const d=await r.json();s.innerHTML='';d.roles.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.name;s.appendChild(o)});if(!d.roles.length)s.innerHTML='<option>Нет доступных ролей</option>'}catch(e){s.innerHTML='<option>Ошибка загрузки</option>'}})}
