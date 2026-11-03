@@ -1240,10 +1240,12 @@ async def on_ready():
     if not _slash_commands_synced:
         try:
             synced = await bot.tree.sync()
-            logging.info("Синхронизировано slash-команд: %s", len(synced))
+            logging.info("Синхронизировано глобальных slash-команд: %s", len(synced))
             _slash_commands_synced = True
         except Exception:
-            logging.exception("Не удалось синхронизировать slash-команды")
+            logging.exception("Не удалось синхронизировать глобальные slash-команды")
+
+    await _sync_giveaway_commands_for_all_guilds()
 
     if not automation_scheduler.is_running():
         automation_scheduler.start()
@@ -1251,6 +1253,18 @@ async def on_ready():
     if not _ready_notification_sent and notification_settings.get("notify_startup", True):
         await send_admin_notification("🟢 SpideBot запущен и подключён к Discord.")
         _ready_notification_sent = True
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    try:
+        await _sync_giveaway_command_for_guild(guild)
+    except Exception:
+        logging.exception(
+            "Не удалось зарегистрировать /розыгрыш на новом сервере %s (%s)",
+            guild.name,
+            guild.id,
+        )
+
 
 @bot.event
 async def on_disconnect():
@@ -1511,7 +1525,7 @@ async def slash_top(interaction: discord.Interaction):
         )
 
 
-@bot.tree.command(name="розыгрыш", description="Создать розыгрыш на этом сервере")
+@app_commands.command(name="розыгрыш", description="Создать розыгрыш на этом сервере")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 async def slash_giveaway(interaction: discord.Interaction):
@@ -1528,6 +1542,46 @@ async def slash_giveaway(interaction: discord.Interaction):
             creator_name=getattr(interaction.user, "display_name", interaction.user.name),
         )
     )
+
+
+
+
+_giveaway_commands_synced_guilds = set()
+
+
+async def _sync_giveaway_command_for_guild(guild):
+    """Register only /розыгрыш as a guild command for immediate visibility."""
+    guild_ref = discord.Object(id=int(guild.id))
+    command = app_commands.Command(
+        name=slash_giveaway.name,
+        description=slash_giveaway.description,
+        callback=slash_giveaway.callback,
+    )
+    bot.tree.add_command(command, guild=guild_ref, override=True)
+    synced = await bot.tree.sync(guild=guild_ref)
+    _giveaway_commands_synced_guilds.add(int(guild.id))
+    logging.info(
+        "Синхронизирована серверная команда /розыгрыш: guild=%s | guild_id=%s | commands=%s",
+        getattr(guild, "name", "unknown"),
+        guild.id,
+        len(synced),
+    )
+    return synced
+
+
+async def _sync_giveaway_commands_for_all_guilds():
+    """Sync /розыгрыш separately to each joined server, bypassing global rollout delay."""
+    for guild in bot.guilds:
+        if int(guild.id) in _giveaway_commands_synced_guilds:
+            continue
+        try:
+            await _sync_giveaway_command_for_guild(guild)
+        except Exception:
+            logging.exception(
+                "Не удалось синхронизировать /розыгрыш для сервера %s (%s)",
+                getattr(guild, "name", "unknown"),
+                guild.id,
+            )
 
 
 @bot.tree.command(name="links", description="Официальные ссылки Spide")
