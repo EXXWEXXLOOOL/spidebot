@@ -161,6 +161,7 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
     assert {
         "search", "поиск",
         "top", "топ",
+        "розыгрыш",
         "links", "ссылки",
         "checktg", "проверить_тг",
         "rules", "правила",
@@ -175,6 +176,7 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
         "checktg", "проверить_тг",
         "setup_roles", "роли",
         "commands", "команды",
+        "розыгрыш",
     )
     for command_name in admin_only_commands:
         command = tree_commands[command_name]
@@ -744,3 +746,70 @@ def test_slash_command_usage_log_contains_command_user_guild_and_channel(tmp_pat
     assert "channel=music" in caplog.text
     assert "channel_id=345678" in caplog.text
 
+
+
+def test_giveaway_datetime_parsing_and_human_only_participants(tmp_path, monkeypatch):
+    import runpy
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-giveaway-test")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_giveaway_test",
+    )
+
+    parsed_utc = namespace["_parse_giveaway_draw_at"]("2026-11-10 20:00 UTC")
+    parsed_offset = namespace["_parse_giveaway_draw_at"]("2026-11-10T22:00:00+02:00")
+    assert parsed_utc == datetime(2026, 11, 10, 20, 0, tzinfo=timezone.utc)
+    assert parsed_offset == parsed_utc
+    assert namespace["_parse_giveaway_draw_at"]("not-a-date") is None
+
+    giveaway = {
+        "guild_id": 1234,
+        "channel_id": 2345,
+        "creator_id": 3456,
+        "creator_name": "Admin",
+        "prize": "Nitro",
+        "conditions": "Be a member",
+        "draw_at": parsed_utc.isoformat(),
+        "participants": [],
+        "status": "active",
+    }
+    namespace["_save_giveaways"]({"giveaway-1": giveaway})
+
+    status, _ = namespace["_register_giveaway_participant"](
+        "giveaway-1", 1234, SimpleNamespace(id=999, bot=True)
+    )
+    assert status == "bot"
+    assert namespace["_load_giveaways"]()["giveaway-1"]["participants"] == []
+
+    status, _ = namespace["_register_giveaway_participant"](
+        "giveaway-1", 1234, SimpleNamespace(id=111, bot=False)
+    )
+    assert status == "added"
+    status, _ = namespace["_register_giveaway_participant"](
+        "giveaway-1", 1234, SimpleNamespace(id=111, bot=False)
+    )
+    assert status == "duplicate"
+    status, _ = namespace["_register_giveaway_participant"](
+        "giveaway-1", 9999, SimpleNamespace(id=222, bot=False)
+    )
+    assert status == "wrong_guild"
+
+    saved = namespace["_load_giveaways"]()["giveaway-1"]
+    assert saved["participants"] == [111]
+
+    view = namespace["GiveawayJoinView"]("giveaway-1")
+    assert view.is_persistent()
+    assert view.children[0].custom_id == "spide_giveaway_join:giveaway-1"
+    modal = namespace["GiveawayCreateModal"](1234, 2345, 3456, "Admin")
+    assert len(modal.children) == 3
