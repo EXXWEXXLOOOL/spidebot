@@ -395,3 +395,77 @@ def test_role_selector_validation_and_command_help(tmp_path, monkeypatch):
     assert "Повторное нажатие снимает выбранную роль" in help_text
     assert "!commands" in help_text
 
+
+def test_slash_top_aliases_use_shared_handler_and_are_not_advertised(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-slash-top-test")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_slash_top_test",
+    )
+
+    command_map = {command.name: command for command in namespace["bot"].tree.get_commands()}
+    assert "top" in command_map
+    assert "топ" in command_map
+    assert "🏆 Топ слушателей" not in namespace["_build_commands_embed"](
+        SimpleNamespace(
+            display_name="Tester",
+            display_avatar=SimpleNamespace(url="https://example.com/avatar.png"),
+        )
+    ).fields[0].name
+
+    calls = []
+
+    async def allow(_interaction, _key):
+        return True
+
+    async def fake_force_top(channel):
+        calls.append(channel)
+        return True
+
+    namespace["_slash_permission_allowed"] = allow
+    namespace["force_top"] = fake_force_top
+
+    class FakeResponse:
+        def __init__(self):
+            self.deferred = False
+
+        async def defer(self, **kwargs):
+            self.deferred = True
+
+        async def send_message(self, *args, **kwargs):
+            raise AssertionError("Top command should defer in a guild channel")
+
+    class FakeFollowup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, **kwargs):
+            self.messages.append((message, kwargs))
+
+    for name in ("top", "топ"):
+        channel = SimpleNamespace(id=123)
+        interaction = SimpleNamespace(
+            command=SimpleNamespace(name=name),
+            user=SimpleNamespace(id=456),
+            guild=SimpleNamespace(id=789),
+            channel=channel,
+            response=FakeResponse(),
+            followup=FakeFollowup(),
+        )
+        asyncio.run(namespace["_handle_slash_top"](interaction))
+        assert interaction.response.deferred
+        assert calls[-1] is channel
+        assert interaction.followup.messages[-1][0] == "✅ Рейтинг опубликован в этом канале."
+
