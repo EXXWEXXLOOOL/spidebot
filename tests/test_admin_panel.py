@@ -89,7 +89,9 @@ def test_authenticated_overview_renders(tmp_path):
     login(client)
     response = client.get("/admin/")
     assert response.status_code == 200
-    assert b"SPIDEBOT" in response.data
+    assert b"SPIDE" in response.data
+    assert b"BOT" in response.data
+    assert "Обзор системы".encode("utf-8") in response.data
 
 
 def test_new_admin_sections_render(tmp_path):
