@@ -320,6 +320,62 @@ def start_web_panel():
     logging.info(f"Веб-панель запущена на порту {os.getenv('PORT', 3000)}")
 
 # ==============================
+# SPIDEBOT ADMIN V2 INTEGRATION
+# ==============================
+def _admin_queue_checktg():
+    if not bot.loop or not bot.loop.is_running():
+        raise RuntimeError("Discord event loop is not running")
+    asyncio.run_coroutine_threadsafe(force_checktg(), bot.loop)
+
+def _admin_queue_top():
+    if not bot.loop or not bot.loop.is_running():
+        raise RuntimeError("Discord event loop is not running")
+    channel = bot.get_channel(TOP_CHANNEL_ID)
+    if channel is None:
+        raise RuntimeError("TOP_CHANNEL_ID is not available to the bot")
+    asyncio.run_coroutine_threadsafe(force_top(channel), bot.loop)
+
+def _admin_queue_cookie_test():
+    if not bot.loop or not bot.loop.is_running():
+        raise RuntimeError("Discord event loop is not running")
+    asyncio.run_coroutine_threadsafe(test_spide_cookie(), bot.loop)
+
+def _admin_get_top_data():
+    cookie = app_config.get("SPIDE_COOKIE", "")
+    if not cookie:
+        raise RuntimeError("Spide cookie is not configured")
+    headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
+    response = requests.get(SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Unexpected Spide API response")
+    return data
+
+register_admin_panel(
+    web_app,
+    bot,
+    get_config=lambda: app_config,
+    save_config=save_config,
+    get_logs=lambda: list(log_buffer),
+    actions={
+        "checktg": _admin_queue_checktg,
+        "top": _admin_queue_top,
+        "cookie": _admin_queue_cookie_test,
+    },
+    get_top_data=_admin_get_top_data,
+    data_dir=DATA_DIR,
+    url_prefix="/admin",
+)
+
+@web_app.before_request
+def require_admin_panel_for_legacy_routes():
+    # All management now goes through authenticated, CSRF-protected /admin routes.
+    if not request.path.startswith("/admin"):
+        return redirect("/admin/login")
+    return None
+
+# ==============================
 # HELPERS & VIEWS
 # ==============================
 class TrackView(discord.ui.View):
