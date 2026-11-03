@@ -1042,15 +1042,6 @@ def _build_commands_embed(author):
         inline=False,
     )
     embed.add_field(
-        name="🎭 Выбор роли",
-        value=(
-            "`/setup_roles` или `/роли` — команда для администратора, публикует меню выбора платформы.\n"
-            "Участнику нужно нажать **Android**, **Web** или **Desktop** под меню. "
-            "Повторное нажатие снимает выбранную роль."
-        ),
-        inline=False,
-    )
-    embed.add_field(
         name="📜 Сообщество",
         value="`/rules` или `/правила` — правила сообщества.\n`/commands` или `/команды` — эта справка.",
         inline=False,

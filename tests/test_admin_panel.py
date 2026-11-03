@@ -392,8 +392,8 @@ def test_role_selector_validation_and_command_help(tmp_path, monkeypatch):
     help_embed = namespace["_build_commands_embed"](author)
     help_text = "\\n".join(field.value for field in help_embed.fields)
     assert "/search" in help_text and "/поиск" in help_text
-    assert "/setup_roles" in help_text and "/роли" in help_text
-    assert "Повторное нажатие снимает выбранную роль" in help_text
+    assert "/setup_roles" not in help_text and "/роли" not in help_text
+    assert "Выбор роли" not in help_text
     assert "!commands" not in help_text
     assert "!checktg" not in help_text
     assert "/checktg" not in help_text
