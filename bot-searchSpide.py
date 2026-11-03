@@ -13,6 +13,7 @@ import re
 import threading
 import json
 import collections
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import secrets
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from dashboard.admin_panel import register_admin_panel
@@ -144,11 +145,16 @@ def _save_giveaways(giveaways):
         os.replace(temporary_path, GIVEAWAYS_FILE)
 
 
-def _parse_giveaway_draw_at(value):
-    """Parse an ISO date/time; naive values are explicitly interpreted as UTC."""
+def _parse_giveaway_draw_at(value, timezone_name="Europe/Moscow"):
+    """Parse a giveaway date/time in the supplied IANA timezone unless it has an explicit offset."""
     raw = str(value or "").strip()
     if not raw:
         return None
+    try:
+        selected_timezone = ZoneInfo(str(timezone_name or ""))
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return None
+
     normalized = raw[:-4].strip() + "+00:00" if raw.upper().endswith(" UTC") else raw
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
@@ -160,7 +166,7 @@ def _parse_giveaway_draw_at(value):
         except ValueError:
             return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        parsed = parsed.replace(tzinfo=selected_timezone)
     return parsed.astimezone(datetime.timezone.utc)
 
 
@@ -247,7 +253,11 @@ def _build_giveaway_embed(giveaway):
     if giveaway.get("status") == "active":
         embed.add_field(
             name="⏰ Когда итоги",
-            value=f"<t:{timestamp}:F>\n<t:{timestamp}:R>" if timestamp else "Время не задано",
+            value=(
+                f"<t:{timestamp}:F>\n<t:{timestamp}:R>\n"
+                f"Часовой пояс организатора: {giveaway.get('timezone', 'UTC')}"
+                if timestamp else "Время не задано"
+            ),
             inline=True,
         )
         embed.add_field(name="👥 Участников", value=str(len(participants)), inline=True)
@@ -423,9 +433,16 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
         style=discord.TextStyle.paragraph,
     )
     draw_time = discord.ui.TextInput(
-        label="Когда провести розыгрыш? (UTC)",
-        placeholder="2026-11-10 20:00 UTC",
+        label="Когда провести розыгрыш?",
+        placeholder="2026-11-10 23:10",
         max_length=40,
+        style=discord.TextStyle.short,
+    )
+    timezone = discord.ui.TextInput(
+        label="Часовой пояс (IANA)",
+        placeholder="Europe/Moscow",
+        default="Europe/Moscow",
+        max_length=64,
         style=discord.TextStyle.short,
     )
     conditions = discord.ui.TextInput(
@@ -454,13 +471,22 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
             self.places.value,
             self.prizes.value,
         )
-        draw_at = _parse_giveaway_draw_at(self.draw_time.value)
+        timezone_name = str(self.timezone.value or "").strip() or "Europe/Moscow"
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            await interaction.response.send_message(
+                "Неизвестный часовой пояс. Например: Europe/Moscow или Europe/Berlin.",
+                ephemeral=True,
+            )
+            return
+        draw_at = _parse_giveaway_draw_at(self.draw_time.value, timezone_name)
         if prize_error:
             await interaction.response.send_message(f"❌ {prize_error}", ephemeral=True)
             return
         if draw_at is None:
             await interaction.response.send_message(
-                "❌ Не понял дату. Используй формат ГГГГ-ММ-ДД ЧЧ:ММ UTC, например 2026-11-10 20:00 UTC.",
+                "❌ Не понял дату. Используй формат ГГГГ-ММ-ДД ЧЧ:ММ, например 2026-11-10 23:10. Время будет рассчитано по указанному часовому поясу.",
                 ephemeral=True,
             )
             return
@@ -490,6 +516,7 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
             "places_count": places_count,
             "conditions": str(self.conditions.value or "").strip(),
             "draw_at": draw_at.isoformat(),
+            "timezone": timezone_name,
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "participants": [],
             "status": "active",
