@@ -134,34 +134,79 @@ async def global_permission_check(ctx):
 # ==============================
 # WELCOME MESSAGE & ROLES
 # ==============================
+def _role_assignment_error(guild, role):
+    """Return a readable reason when the bot cannot assign the requested role."""
+    if role is None:
+        return "Эта роль не найдена на сервере. Попросите администратора проверить роли."
+    if role.is_default() or role.managed:
+        return "Эту роль нельзя выдать через меню. Выберите обычную роль сервера."
+
+    bot_member = getattr(guild, "me", None)
+    if bot_member is None and bot.user is not None:
+        bot_member = guild.get_member(bot.user.id)
+    if bot_member is None:
+        return "Не удалось определить участника SpideBot на сервере."
+
+    if not bot_member.guild_permissions.manage_roles:
+        return "У SpideBot нет права **Управлять ролями**. Администратору нужно включить его в настройках роли бота."
+    if role >= bot_member.top_role:
+        return (
+            f"Роль **{role.name}** стоит выше или на одном уровне с высшей ролью SpideBot. "
+            "Переместите роль бота выше неё в настройках сервера."
+        )
+    return None
+
+
 class RoleSelectView(discord.ui.View):
+    """Persistent self-service platform-role selector."""
+
     def __init__(self):
         super().__init__(timeout=None)
 
     async def handle_role(self, interaction: discord.Interaction, role_name: str):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Выбор ролей доступен только на Discord-сервере.",
+                ephemeral=True,
+            )
+            return
+
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.errors.NotFound:
+        except discord.NotFound:
             return
 
+        member = interaction.user
         role = discord.utils.get(interaction.guild.roles, name=role_name)
-        if not role:
-            await interaction.followup.send(f"❌ Роль **{role_name}** не найдена на сервере. Создайте её.", ephemeral=True)
+        problem = _role_assignment_error(interaction.guild, role)
+        if problem:
+            await interaction.followup.send(f"❌ {problem}", ephemeral=True)
             return
 
         try:
-            if role in interaction.user.roles:
-                await interaction.user.remove_roles(role)
+            if role in member.roles:
+                await member.remove_roles(role, reason="Самостоятельный выбор роли через SpideBot")
                 await interaction.followup.send(f"✅ Роль **{role_name}** снята.", ephemeral=True)
             else:
-                await interaction.user.add_roles(role)
+                await member.add_roles(role, reason="Самостоятельный выбор роли через SpideBot")
                 await interaction.followup.send(f"✅ Роль **{role_name}** выдана!", ephemeral=True)
         except discord.Forbidden:
-            logging.error(f"Ошибка прав при выдаче роли {role_name} пользователю {interaction.user.name}")
-            await interaction.followup.send("❌ **Ошибка прав!** У бота нет права `Управлять ролями` или его роль стоит ниже, чем выдаваемая. Сообщите админу.", ephemeral=True)
-        except Exception as e:
-            logging.error(f"Ошибка выдачи роли: {e}")
-            await interaction.followup.send(f"❌ Произошла ошибка: `{e}`", ephemeral=True)
+            logging.exception(
+                "Discord запретил изменение роли %s для пользователя %s",
+                role_name,
+                getattr(member, "id", "unknown"),
+            )
+            await interaction.followup.send(
+                "❌ Discord отклонил изменение роли. Проверьте право **Управлять ролями** "
+                "и положение высшей роли SpideBot.",
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            logging.exception("Discord API вернул ошибку при изменении роли %s", role_name)
+            await interaction.followup.send(
+                "❌ Discord не смог изменить роль из-за ошибки API. Попробуй ещё раз позже.",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Android", style=discord.ButtonStyle.primary, emoji="🤖", custom_id="role_android")
     async def android_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -630,6 +675,7 @@ async def test_spide_cookie():
 # ==============================
 _ready_notification_sent = False
 _slash_commands_synced = False
+_persistent_role_view_registered = False
 
 async def send_admin_notification(message, force=False):
     settings = app_config.get("notifications", {})
@@ -801,8 +847,14 @@ def require_admin_panel_for_legacy_routes():
 # ==============================
 @bot.event
 async def on_ready():
-    global _ready_notification_sent, _slash_commands_synced
+    global _ready_notification_sent, _slash_commands_synced, _persistent_role_view_registered
     logging.info(f"Бот {bot.user} успешно запущен!")
+
+    if not _persistent_role_view_registered:
+        bot.add_view(RoleSelectView())
+        _persistent_role_view_registered = True
+        logging.info("Постоянное меню выбора ролей зарегистрировано")
+
     if not _slash_commands_synced:
         try:
             synced = await bot.tree.sync()
@@ -836,7 +888,7 @@ async def on_command_error(ctx, error):
             f"{ctx.guild.id if ctx.guild else 'DM'}: {str(error)[:900]}"
         )
 
-def _slash_permission_allowed(interaction: discord.Interaction, command_key: str) -> bool:
+async def _slash_permission_allowed(interaction: discord.Interaction, command_key: str) -> bool:
     """Apply the same role restrictions as prefix commands to slash aliases."""
     if interaction.guild is None:
         return True
@@ -967,32 +1019,56 @@ def _build_links_embed(author):
 def _build_commands_embed(author):
     embed = discord.Embed(
         title="📋 Команды SpideBot",
-        description="Команды доступны на русском и английском языках. Старые команды с ! тоже работают.",
+        description=(
+            "Выбирай удобный формат: slash-команды начинаются с /, "
+            "старые текстовые команды — с !. Русские и английские варианты работают одинаково."
+        ),
         color=ORANGE,
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(
         name="🎵 Поиск музыки",
-        value="/search или /поиск — найти трек, альбом или исполнителя.\n!search или !поиск — старый формат.",
+        value=(
+            "**Slash:** `/search` или `/поиск` — введи запрос в поле `query` / `запрос`. "
+            "Пример: `/поиск` → `Дора`.
+"
+            "**Текст:** `!search Despacito` или `!поиск Дора`."
+        ),
         inline=False,
     )
     embed.add_field(
         name="🏆 Топ слушателей",
-        value="/top или /топ — сегодняшний рейтинг слушателей Spide.",
+        value="**Slash:** `/top` или `/топ`.
+**Текст:** `!top` или `!топ`.",
         inline=False,
     )
     embed.add_field(
-        name="🔗 Ссылки",
-        value="/links или /ссылки — официальные ресурсы Spide.",
+        name="🔗 Полезные ссылки",
+        value="**Slash:** `/links` или `/ссылки`.
+**Текст:** `!links` или `!ссылки`.",
         inline=False,
     )
     embed.add_field(
-        name="🛠️ Остальные команды",
+        name="🎭 Выбор роли",
         value=(
-            "/checktg или /проверить_тг — проверить Telegram-каналы.\n"
-            "/rules или /правила — правила сообщества.\n"
-            "/setup_roles или /роли — выбор платформы.\n"
-            "/commands или /команды — список команд."
+            "**Для администратора:** `/setup_roles`, `/роли`, `!setup_roles` или `!роли` — "
+            "опубликовать меню выбора платформы.
+"
+            "**Для участника:** нажми кнопку **Android**, **Web** или **Desktop** под меню. "
+            "Повторное нажатие снимает выбранную роль."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📜 Сообщество и Telegram",
+        value=(
+            "`/rules` или `/правила` — правила сервера.
+"
+            "`/checktg` или `/проверить_тг` — проверить Telegram-каналы (для администраторов).
+"
+            "`/commands` или `/команды` — эта справка.
+"
+            "Старые варианты: `!rules`, `!правила`, `!checktg`, `!проверить_тг`, `!commands`, `!команды`."
         ),
         inline=False,
     )
@@ -1001,7 +1077,6 @@ def _build_commands_embed(author):
         icon_url=author.display_avatar.url,
     )
     return embed
-
 
 async def _handle_slash_search(interaction: discord.Interaction, query: str):
     if not await _slash_permission_allowed(interaction, "search"):
