@@ -1165,14 +1165,15 @@ async def slash_top(interaction: discord.Interaction):
     if not await _slash_permission_allowed(interaction, "top"):
         return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    # Keep the interaction public so Discord shows who invoked /top in the channel.
+    await interaction.response.defer(ephemeral=False, thinking=True)
     success = await _publish_top_to_channel(interaction.channel)
     if success:
-        await interaction.followup.send("✅ Топ опубликован в этом канале.", ephemeral=True)
+        await interaction.followup.send("✅ Топ опубликован в этом канале.", ephemeral=False)
     else:
         await interaction.followup.send(
             "❌ Не удалось получить топ. Проверь SPIDE_COOKIE и логи бота.",
-            ephemeral=True,
+            ephemeral=False,
         )
 
 
