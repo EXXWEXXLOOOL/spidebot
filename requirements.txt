@@ -2,4 +2,5 @@ discord.py
 curl_cffi
 beautifulsoup4
 lxml
-Flask
+Flask>=3.0,<4
+Werkzeug>=3.0,<4
