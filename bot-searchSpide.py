@@ -43,6 +43,7 @@ DATA_DIR = os.getenv("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
 DEFAULT_CONFIG = {
+    "config_version": 2,
     "SPIDE_COOKIE": os.getenv("SPIDE_COOKIE", ""),
     "tg_channels": ["dsdedmak0193"],
     "last_ids": {"dsdedmak0193": 0},
@@ -51,7 +52,7 @@ DEFAULT_CONFIG = {
         "telegram_enabled": True,
         "telegram_interval_minutes": 10,
         "daily_top_enabled": True,
-        "daily_top_hour_utc": 0,
+        "daily_top_hour_utc": 3,
         "daily_top_minute_utc": 22
     },
     "automation_state": {},
@@ -69,13 +70,43 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                for key in DEFAULT_CONFIG:
-                    if key not in data:
-                        data[key] = DEFAULT_CONFIG[key]
-                return data
+
+            changed = False
+            for key, default_value in DEFAULT_CONFIG.items():
+                if key not in data:
+                    data[key] = json.loads(json.dumps(default_value))
+                    changed = True
+                elif isinstance(default_value, dict) and isinstance(data.get(key), dict):
+                    for nested_key, nested_value in default_value.items():
+                        if nested_key not in data[key]:
+                            data[key][nested_key] = nested_value
+                            changed = True
+
+            try:
+                config_version = int(data.get("config_version", 1))
+            except (TypeError, ValueError):
+                config_version = 1
+
+            # Previous releases defaulted to 00:22 UTC. Move only that old
+            # untouched default to the requested 03:22 UTC; preserve custom times.
+            if config_version < 2:
+                automation = data.setdefault("automation", {})
+                if (
+                    automation.get("daily_top_hour_utc") == 0
+                    and automation.get("daily_top_minute_utc") == 22
+                ):
+                    automation["daily_top_hour_utc"] = 3
+                    changed = True
+                data["config_version"] = 2
+                changed = True
+
+            if changed:
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=4)
+            return data
         except Exception as e:
             logging.error(f"Ошибка чтения конфига: {e}")
-    return DEFAULT_CONFIG.copy()
+    return json.loads(json.dumps(DEFAULT_CONFIG))
 
 def save_config(config):
     try:
@@ -649,11 +680,6 @@ async def force_top(target_channel):
         await target_channel.send(f"❌ Ошибка получения топа: {str(exc)[:500]}")
         return False
 
-@tasks.loop(time=datetime.time(hour=0, minute=22, tzinfo=datetime.timezone.utc))
-async def daily_top_task():
-    channel = bot.get_channel(TOP_CHANNEL_ID)
-    if channel: await force_top(channel)
-
 async def test_spide_cookie():
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie:
@@ -776,6 +802,32 @@ def _admin_moderation_action(action, guild_id, user_id, reason, duration_minutes
     future.add_done_callback(report_result)
     return future
 
+async def _publish_top_to_channel(channel):
+    """Publish the current top to exactly the supplied channel."""
+    if channel is None or not hasattr(channel, "send"):
+        logging.error("Публикация топа: целевой канал недоступен или не поддерживает отправку")
+        return False
+    return await force_top(channel)
+
+
+async def _publish_daily_top():
+    """Publish the scheduled daily top only to TOP_CHANNEL_ID."""
+    channel = bot.get_channel(TOP_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(TOP_CHANNEL_ID)
+        except Exception:
+            logging.exception("Не удалось получить целевой канал ежедневного топа %s", TOP_CHANNEL_ID)
+            return False
+
+    if channel is None or not hasattr(channel, "send"):
+        logging.error("Целевой канал ежедневного топа %s не поддерживает отправку", TOP_CHANNEL_ID)
+        return False
+
+    logging.info("Ежедневный топ будет опубликован только в канале %s", TOP_CHANNEL_ID)
+    return await _publish_top_to_channel(channel)
+
+
 @tasks.loop(minutes=1)
 async def automation_scheduler():
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -804,19 +856,15 @@ async def automation_scheduler():
 
     if settings.get("daily_top_enabled", True):
         try:
-            hour = int(settings.get("daily_top_hour_utc", 0))
+            hour = int(settings.get("daily_top_hour_utc", 3))
             minute = int(settings.get("daily_top_minute_utc", 22))
         except (TypeError, ValueError):
-            hour, minute = 0, 22
+            hour, minute = 3, 22
         today = now.date().isoformat()
         if now.hour == hour and now.minute == minute and state.get("last_daily_top_date") != today:
             state["last_daily_top_date"] = today
             save_config(app_config)
-            channel = bot.get_channel(TOP_CHANNEL_ID)
-            if channel is not None:
-                await force_top(channel)
-            else:
-                logging.error("Автоматическая публикация топа: канал %s недоступен", TOP_CHANNEL_ID)
+            await _publish_daily_top()
 
 register_admin_panel(
     web_app,
@@ -887,6 +935,19 @@ async def on_command_error(ctx, error):
             f"Ошибка команды {getattr(ctx.command, 'qualified_name', 'unknown')} на сервере "
             f"{ctx.guild.id if ctx.guild else 'DM'}: {str(error)[:900]}"
         )
+
+async def _require_administrator(interaction: discord.Interaction) -> bool:
+    """Require the Discord Administrator permission for management commands."""
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if interaction.guild is None or permissions is None or not permissions.administrator:
+        message = "❌ Эта команда доступна только администраторам сервера."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+        return False
+    return True
+
 
 async def _slash_permission_allowed(interaction: discord.Interaction, command_key: str) -> bool:
     """Apply the same role restrictions as prefix commands to slash aliases."""
@@ -1103,7 +1164,7 @@ async def slash_top(interaction: discord.Interaction):
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
-    success = await force_top(interaction.channel)
+    success = await _publish_top_to_channel(interaction.channel)
     if success:
         await interaction.followup.send("✅ Топ опубликован в этом канале.", ephemeral=True)
     else:
@@ -1121,7 +1182,11 @@ async def slash_links(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="checktg", description="Проверить новые публикации Telegram")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
 async def slash_checktg(interaction: discord.Interaction):
+    if not await _require_administrator(interaction):
+        return
     if not await _slash_permission_allowed(interaction, "checktg"):
         return
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1141,7 +1206,11 @@ async def slash_rules(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="setup_roles", description="Опубликовать кнопки выбора платформы")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
 async def slash_setup_roles(interaction: discord.Interaction):
+    if not await _require_administrator(interaction):
+        return
     if not await _slash_permission_allowed(interaction, "setup_roles"):
         return
     if interaction.guild is None or not interaction.user.guild_permissions.administrator:
@@ -1154,7 +1223,11 @@ async def slash_setup_roles(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="commands", description="Показать список команд SpideBot")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
 async def slash_commands(interaction: discord.Interaction):
+    if not await _require_administrator(interaction):
+        return
     if not await _slash_permission_allowed(interaction, "commands"):
         return
     await interaction.response.send_message(embed=_build_commands_embed(interaction.user))
@@ -1177,6 +1250,8 @@ async def slash_links_ru(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="проверить_тг", description="Проверить новые публикации Telegram")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
 async def slash_checktg_ru(interaction: discord.Interaction):
     await slash_checktg.callback(interaction)
 
@@ -1187,11 +1262,15 @@ async def slash_rules_ru(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="роли", description="Опубликовать кнопки выбора платформы")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
 async def slash_setup_roles_ru(interaction: discord.Interaction):
     await slash_setup_roles.callback(interaction)
 
 
 @bot.tree.command(name="команды", description="Показать список команд SpideBot")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
 async def slash_commands_ru(interaction: discord.Interaction):
     await slash_commands.callback(interaction)
 
