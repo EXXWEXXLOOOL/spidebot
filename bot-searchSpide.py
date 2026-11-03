@@ -367,31 +367,6 @@ def _admin_get_top_data():
         raise ValueError("Unexpected Spide API response")
     return data
 
-register_admin_panel(
-    web_app,
-    bot,
-    get_config=lambda: app_config,
-    save_config=save_config,
-    get_logs=lambda: list(log_buffer),
-    actions={
-        "checktg": _admin_queue_checktg,
-        "top": _admin_queue_top,
-        "cookie": _admin_queue_cookie_test,
-        "notification_test": _admin_queue_notification_test,
-    },
-    get_top_data=_admin_get_top_data,
-    data_dir=DATA_DIR,
-    url_prefix="/admin",
-    moderation_action=_admin_moderation_action,
-)
-
-@web_app.before_request
-def require_admin_panel_for_legacy_routes():
-    # All management now goes through authenticated, CSRF-protected /admin routes.
-    if not request.path.startswith("/admin"):
-        return redirect("/admin/login")
-    return None
-
 # ==============================
 # HELPERS & VIEWS
 # ==============================
@@ -776,6 +751,31 @@ async def automation_scheduler():
                 await force_top(channel)
             else:
                 logging.error("Автоматическая публикация топа: канал %s недоступен", TOP_CHANNEL_ID)
+
+register_admin_panel(
+    web_app,
+    bot,
+    get_config=lambda: app_config,
+    save_config=save_config,
+    get_logs=lambda: list(log_buffer),
+    actions={
+        "checktg": _admin_queue_checktg,
+        "top": _admin_queue_top,
+        "cookie": _admin_queue_cookie_test,
+        "notification_test": _admin_queue_notification_test,
+    },
+    get_top_data=_admin_get_top_data,
+    data_dir=DATA_DIR,
+    url_prefix="/admin",
+    moderation_action=_admin_moderation_action,
+)
+
+@web_app.before_request
+def require_admin_panel_for_legacy_routes():
+    # All management now goes through authenticated, CSRF-protected /admin routes.
+    if not request.path.startswith("/admin"):
+        return redirect("/admin/login")
+    return None
 
 # EVENTS & COMMANDS
 # ==============================
