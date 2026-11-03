@@ -191,14 +191,52 @@ def _register_giveaway_participant(giveaway_id, guild_id, user):
     return "added", giveaway
 
 
+def _get_giveaway_prizes(giveaway):
+    """Read per-place prizes while remaining compatible with older single-prize entries."""
+    prizes = giveaway.get("prizes")
+    if isinstance(prizes, list) and prizes:
+        return [str(prize).strip() for prize in prizes if str(prize).strip()]
+    legacy_prize = str(giveaway.get("prize") or "Приз").strip()
+    return [legacy_prize or "Приз"]
+
+
+def _parse_giveaway_prizes(places_value, prizes_value):
+    """Validate one non-empty prize line for each of 1-10 prize places."""
+    try:
+        places = int(str(places_value).strip())
+    except (TypeError, ValueError):
+        return None, None, "Укажи количество мест числом от 1 до 10."
+
+    if places < 1 or places > 10:
+        return None, None, "Количество призовых мест должно быть от 1 до 10."
+
+    prizes = [line.strip() for line in str(prizes_value or "").splitlines() if line.strip()]
+    if len(prizes) != places:
+        return None, None, (
+            f"Указано мест: {places}, а призов: {len(prizes)}. "
+            f"Добавь ровно {places} строк(и) с призами — по одной на каждое место."
+        )
+    if any(len(prize) > 120 for prize in prizes):
+        return None, None, "Каждый приз должен быть не длиннее 120 символов."
+    return places, prizes, None
+
+
 def _build_giveaway_embed(giveaway):
-    """Build the public giveaway card and its final winner announcement."""
+    """Build the public giveaway card and its multi-winner result."""
     draw_at = _parse_giveaway_draw_at(giveaway.get("draw_at"))
     timestamp = int(draw_at.timestamp()) if draw_at else 0
     participants = giveaway.get("participants", [])
+    prizes = _get_giveaway_prizes(giveaway)
+    places_count = len(prizes)
+
+    prize_lines = []
+    for index, prize in enumerate(prizes, start=1):
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(index, f"**{index}.**")
+        prize_lines.append(f"{medal} {prize}")
+
     embed = discord.Embed(
-        title="🎉 РОЗЫГРЫШ",
-        description=f"**{str(giveaway.get('prize', 'Приз'))[:256]}**",
+        title=f"🎉 РОЗЫГРЫШ • {places_count} мест",
+        description="**Призы:**\n" + "\n".join(prize_lines),
         color=ORANGE,
     )
     embed.add_field(
@@ -215,13 +253,26 @@ def _build_giveaway_embed(giveaway):
         embed.add_field(name="👥 Участников", value=str(len(participants)), inline=True)
         embed.set_footer(text=f"Организатор: {giveaway.get('creator_name', 'Администратор')} • Нажми кнопку, чтобы участвовать")
     else:
-        winner_id = giveaway.get("winner_id")
-        winner_text = f"🏆 Победитель: <@{winner_id}>" if winner_id else "😕 Никто не участвовал — победителя нет."
-        embed.add_field(name="🎊 Результат", value=winner_text, inline=False)
+        winners = giveaway.get("winner_ids")
+        if not isinstance(winners, list):
+            legacy_winner = giveaway.get("winner_id")
+            winners = [legacy_winner] if legacy_winner else []
+        result_lines = []
+        for index, prize in enumerate(prizes):
+            winner_id = winners[index] if index < len(winners) else None
+            medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(index, f"**{index + 1}.**")
+            if winner_id:
+                result_lines.append(f"{medal} **{prize}** — <@{winner_id}>")
+            else:
+                result_lines.append(f"{medal} **{prize}** — победителя нет (не хватило участников)")
+        embed.add_field(
+            name="🏆 Результаты розыгрыша",
+            value="\n".join(result_lines)[:1024],
+            inline=False,
+        )
         embed.add_field(name="👥 Участников", value=str(len(participants)), inline=True)
         embed.set_footer(text=f"Розыгрыш завершён • Организатор: {giveaway.get('creator_name', 'Администратор')}")
     return embed
-
 
 class GiveawayJoinView(discord.ui.View):
     """Persistent entry button for a giveaway announcement."""
@@ -312,8 +363,11 @@ async def _process_due_giveaways(now=None):
                 int(value) for value in giveaway.get("participants", [])
                 if str(value).isdigit()
             ]
+            prizes = _get_giveaway_prizes(giveaway)
+            winners = secrets.SystemRandom().sample(entrants, k=min(len(entrants), len(prizes)))
             giveaway["status"] = "drawn"
-            giveaway["winner_id"] = secrets.choice(entrants) if entrants else None
+            giveaway["winner_ids"] = winners
+            giveaway["winner_id"] = winners[0] if winners else None
             giveaway["drawn_at"] = now.astimezone(datetime.timezone.utc).isoformat()
             giveaway["result_published"] = False
             _save_giveaways(giveaways)
@@ -344,18 +398,24 @@ async def _process_due_giveaways(now=None):
                 giveaway_id,
                 giveaway.get("guild_id"),
                 len(entrants),
-                winner_id or "нет",
+                ", ".join(str(value) for value in giveaway.get("winner_ids", [])) or "нет",
             )
         except Exception:
             logging.exception("Не удалось опубликовать итоги розыгрыша %s", giveaway_id)
 
 
 class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгрыша"):
-    prize = discord.ui.TextInput(
-        label="Что разыгрываем?",
-        placeholder="Например: Discord Nitro на 1 месяц",
-        max_length=150,
+    places = discord.ui.TextInput(
+        label="Количество призовых мест (1–10)",
+        placeholder="Например: 5",
+        max_length=2,
         style=discord.TextStyle.short,
+    )
+    prizes = discord.ui.TextInput(
+        label="Призы — каждый с новой строки",
+        placeholder="Discord Nitro на 1 месяц\nDiscord Nitro на 1 месяц\nDiscord Nitro на 1 месяц",
+        max_length=1000,
+        style=discord.TextStyle.paragraph,
     )
     draw_time = discord.ui.TextInput(
         label="Когда провести розыгрыш? (UTC)",
@@ -385,10 +445,13 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
         if not await _require_administrator(interaction):
             return
 
-        prize_text = str(self.prize.value or "").strip()
+        places_count, prize_list, prize_error = _parse_giveaway_prizes(
+            self.places.value,
+            self.prizes.value,
+        )
         draw_at = _parse_giveaway_draw_at(self.draw_time.value)
-        if not prize_text:
-            await interaction.response.send_message("❌ Укажи, что разыгрывается.", ephemeral=True)
+        if prize_error:
+            await interaction.response.send_message(f"❌ {prize_error}", ephemeral=True)
             return
         if draw_at is None:
             await interaction.response.send_message(
@@ -417,7 +480,9 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
             "channel_id": self.channel_id,
             "creator_id": self.creator_id,
             "creator_name": self.creator_name,
-            "prize": prize_text,
+            "prize": prize_list[0],
+            "prizes": prize_list,
+            "places_count": places_count,
             "conditions": str(self.conditions.value or "").strip(),
             "draw_at": draw_at.isoformat(),
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -438,10 +503,9 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
             return
 
         await interaction.followup.send(
-            f"✅ Розыгрыш опубликован: [перейти к сообщению]({message.jump_url}).",
+            f"✅ Розыгрыш на {places_count} мест опубликован: [перейти к сообщению]({message.jump_url}).",
             ephemeral=True,
         )
-
 
 
 # ==============================
