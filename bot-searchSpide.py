@@ -1155,11 +1155,6 @@ async def slash_search(interaction: discord.Interaction, query: str):
 
 @bot.tree.command(name="top", description="Показать топ слушателей Spide")
 async def slash_top(interaction: discord.Interaction):
-    logging.info(
-        "Slash /top вызвана пользователем %s в канале %s",
-        interaction.user.id,
-        getattr(interaction.channel, "id", None),
-    )
     if not await _slash_permission_allowed(interaction, "top"):
         return
 
@@ -1241,7 +1236,7 @@ async def slash_search_ru(interaction: discord.Interaction, запрос: str):
 
 @bot.tree.command(name="топ", description="Показать топ слушателей Spide")
 async def slash_top_ru(interaction: discord.Interaction):
-    await slash_top(interaction)
+    await slash_top.callback(interaction)
 
 
 @bot.tree.command(name="ссылки", description="Официальные ссылки Spide")
@@ -1275,11 +1270,43 @@ async def slash_commands_ru(interaction: discord.Interaction):
     await slash_commands.callback(interaction)
 
 
+def _log_slash_command_usage(
+    interaction: discord.Interaction,
+    command=None,
+    outcome: str = "success",
+):
+    """Write one structured log entry for every slash-command invocation."""
+    command_name = getattr(command, "name", None) or getattr(interaction.command, "name", "unknown")
+    user = interaction.user
+    guild = interaction.guild
+    channel = interaction.channel
+
+    logging.info(
+        "SLASH_COMMAND | outcome=%s | command=/%s | user=%s | user_id=%s "
+        "| guild=%s | guild_id=%s | channel=%s | channel_id=%s",
+        outcome,
+        command_name,
+        getattr(user, "display_name", None) or getattr(user, "name", "unknown"),
+        getattr(user, "id", "unknown"),
+        getattr(guild, "name", "DM") if guild is not None else "DM",
+        getattr(guild, "id", None),
+        getattr(channel, "name", "unknown"),
+        getattr(channel, "id", None),
+    )
+
+
+@bot.event
+async def on_app_command_completion(interaction: discord.Interaction, command: app_commands.Command):
+    _log_slash_command_usage(interaction, command=command, outcome="success")
+
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    command = getattr(interaction, "command", None)
+    _log_slash_command_usage(interaction, command=command, outcome="error")
     logging.error(
-        "Ошибка slash-команды %s: %s",
-        getattr(interaction.command, "name", "unknown"),
+        "Ошибка slash-команды /%s: %s",
+        getattr(command, "name", "unknown"),
         error,
         exc_info=(type(error), error, error.__traceback__),
     )
