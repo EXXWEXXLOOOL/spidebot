@@ -72,6 +72,11 @@ def load_config():
                 data = json.load(f)
 
             changed = False
+            try:
+                config_version = int(data.get("config_version", 1))
+            except (TypeError, ValueError):
+                config_version = 1
+
             for key, default_value in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = json.loads(json.dumps(default_value))
@@ -81,11 +86,6 @@ def load_config():
                         if nested_key not in data[key]:
                             data[key][nested_key] = nested_value
                             changed = True
-
-            try:
-                config_version = int(data.get("config_version", 1))
-            except (TypeError, ValueError):
-                config_version = 1
 
             # Previous releases defaulted to 00:22 UTC. Move only that old
             # untouched default to the requested 03:22 UTC; preserve custom times.
