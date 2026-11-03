@@ -40,7 +40,7 @@ def _ensure_secret(data_dir: Path) -> str:
 
 
 def register_admin_panel(app, bot, get_config, save_config, get_logs,
-                         actions, get_top_data, data_dir="."):
+                         actions, get_top_data, data_dir=".", url_prefix="/admin"):
     data_path = Path(data_dir).resolve()
     backup_dir = data_path / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -386,5 +386,5 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
             flash(f"Не удалось восстановить копию: {str(exc)[:180]}", "error")
         return redirect(url_for("admin.backup"))
 
-    app.register_blueprint(bp)
+    app.register_blueprint(bp, url_prefix=url_prefix)
     return bp
