@@ -510,7 +510,8 @@ def test_daily_top_uses_only_configured_target_channel(tmp_path, monkeypatch):
         published_to.append(channel)
         return True
 
-    monkeypatch.setitem(namespace, "force_top", fake_force_top)
+    daily_top_globals = namespace["_publish_daily_top"].__globals__
+    monkeypatch.setitem(daily_top_globals, "force_top", fake_force_top)
     assert asyncio.run(namespace["_publish_daily_top"]()) is True
     assert requested_ids == [1566895795654107217]
     assert published_to == [target_channel]
@@ -548,6 +549,7 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
 
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=123),
+        guild=object(),
         channel=invocation_channel,
         response=FakeResponse(),
         followup=FakeFollowup(),
@@ -560,8 +562,9 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
         published_to.append(channel)
         return True
 
-    monkeypatch.setitem(namespace, "_slash_permission_allowed", allow_top)
-    monkeypatch.setitem(namespace, "_publish_top_to_channel", fake_publish)
+    slash_top_globals = namespace["slash_top"].callback.__globals__
+    monkeypatch.setitem(slash_top_globals, "_slash_permission_allowed", allow_top)
+    monkeypatch.setitem(slash_top_globals, "_publish_top_to_channel", fake_publish)
 
     asyncio.run(namespace["slash_top"].callback(interaction))
     assert published_to == [invocation_channel]
