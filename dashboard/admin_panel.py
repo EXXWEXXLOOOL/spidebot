@@ -9,10 +9,14 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from flask import (
     Blueprint, abort, current_app, flash, redirect, render_template,
@@ -44,6 +48,119 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
     data_path = Path(data_dir).resolve()
     backup_dir = data_path / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
+    data_path.mkdir(parents=True, exist_ok=True)
+
+    # Admin accounts live in a separate SQLite database. Passwords are stored
+    # as Werkzeug password hashes, never as plaintext.
+    admin_db_path = data_path / "admin_users.sqlite3"
+
+    def connect_admin_db():
+        connection = sqlite3.connect(admin_db_path, timeout=15)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def initialize_admin_db():
+        connection = connect_admin_db()
+        try:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'viewer')),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    last_login_at TEXT
+                )
+                """
+            )
+            count = connection.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
+            # Bootstrap the first owner from the existing environment variables.
+            # This keeps current deployments working without a manual migration.
+            if count == 0:
+                initial_username = os.getenv("ADMIN_USERNAME", "").strip()
+                initial_password = os.getenv("ADMIN_PASSWORD", "")
+                if initial_username and initial_password:
+                    connection.execute(
+                        """
+                        INSERT INTO admin_users
+                            (username, password_hash, role, active, created_at)
+                        VALUES (?, ?, 'owner', 1, ?)
+                        """,
+                        (
+                            initial_username,
+                            generate_password_hash(initial_password),
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                    log.info("Создана первая учётная запись владельца админ-панели: %s", initial_username)
+                else:
+                    log.error(
+                        "Нет учётных записей админ-панели. Задайте ADMIN_USERNAME и ADMIN_PASSWORD "
+                        "для создания первого владельца."
+                    )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def get_admin_by_username(username):
+        connection = connect_admin_db()
+        try:
+            row = connection.execute(
+                "SELECT * FROM admin_users WHERE username = ? COLLATE NOCASE",
+                (username,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            connection.close()
+
+    def get_admin_by_id(user_id):
+        connection = connect_admin_db()
+        try:
+            row = connection.execute(
+                "SELECT * FROM admin_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            connection.close()
+
+    def list_admin_accounts():
+        connection = connect_admin_db()
+        try:
+            rows = connection.execute(
+                """
+                SELECT id, username, role, active, created_at, last_login_at
+                FROM admin_users ORDER BY
+                    CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+                    username COLLATE NOCASE
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            connection.close()
+
+    def create_admin_account(username, password, role):
+        connection = connect_admin_db()
+        try:
+            connection.execute(
+                """
+                INSERT INTO admin_users (username, password_hash, role, active, created_at)
+                VALUES (?, ?, ?, 1, ?)
+                """,
+                (
+                    username,
+                    generate_password_hash(password),
+                    role,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    initialize_admin_db()
 
     app.secret_key = _ensure_secret(data_path)
     app.config.update(
@@ -72,8 +189,32 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
     def login_required(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
-            if not session.get("admin_authenticated"):
+            user_id = session.get("admin_user_id")
+            if not session.get("admin_authenticated") or not user_id:
+                session.clear()
                 return redirect(url_for("admin.login", next=request.path))
+
+            account = get_admin_by_id(user_id)
+            if not account or not account["active"]:
+                session.clear()
+                return redirect(url_for("admin.login", next=request.path))
+
+            # Refresh identity and role from SQLite on every request so that
+            # deactivated accounts lose access immediately.
+            session["admin_username"] = account["username"]
+            session["admin_role"] = account["role"]
+
+            if request.method == "POST" and account["role"] == "viewer" and request.endpoint != "admin.logout":
+                abort(403, description="Эта учётная запись имеет доступ только для просмотра.")
+            return view(*args, **kwargs)
+        return wrapped
+
+    def owner_required(view):
+        @wraps(view)
+        @login_required
+        def wrapped(*args, **kwargs):
+            if session.get("admin_role") != "owner":
+                abort(403, description="Управлять учётными записями может только владелец панели.")
             return view(*args, **kwargs)
         return wrapped
 
@@ -91,7 +232,9 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
             cookie_configured=bool(cfg.get("SPIDE_COOKIE")),
             permissions=cfg.get("permissions", {}),
             logs=logs[-200:],
-            admin_username=os.getenv("ADMIN_USERNAME", "admin"),
+            admin_username=session.get("admin_username", "admin"),
+            admin_role=session.get("admin_role", "viewer"),
+            is_owner=session.get("admin_role") == "owner",
             # The shared template evaluates chart placeholders on every page.
             level_counts={"INFO": 0, "WARNING": 0, "ERROR": 0},
         )
@@ -108,17 +251,32 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         error = None
         if request.method == "POST":
             require_csrf()
-            expected_user = os.getenv("ADMIN_USERNAME", "")
-            expected_password = os.getenv("ADMIN_PASSWORD", "")
-            username = request.form.get("username", "")
+            username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
-            if not expected_user or not expected_password:
-                error = "Задайте ADMIN_USERNAME и ADMIN_PASSWORD в переменных окружения."
-            elif hmac.compare_digest(username, expected_user) and hmac.compare_digest(password, expected_password):
+            account = get_admin_by_username(username) if username else None
+            valid_password = False
+            if account:
+                try:
+                    valid_password = check_password_hash(account["password_hash"], password)
+                except (TypeError, ValueError):
+                    valid_password = False
+
+            if account and account["active"] and valid_password:
                 session.clear()
                 session.permanent = True
                 session["admin_authenticated"] = True
-                session["admin_username"] = username
+                session["admin_user_id"] = account["id"]
+                session["admin_username"] = account["username"]
+                session["admin_role"] = account["role"]
+                connection = connect_admin_db()
+                try:
+                    connection.execute(
+                        "UPDATE admin_users SET last_login_at = ? WHERE id = ?",
+                        (datetime.now(timezone.utc).isoformat(), account["id"]),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
                 csrf_value()
                 audit("успешный вход")
                 target = request.args.get("next", "")
@@ -128,8 +286,12 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
             else:
                 error = "Неверный логин или пароль."
                 log.warning("Неудачная попытка входа в админ-панель")
-        return render_template("login.html", csrf=csrf_value(), error=error,
-                               configured=bool(os.getenv("ADMIN_USERNAME") and os.getenv("ADMIN_PASSWORD")))
+        return render_template(
+            "login.html",
+            csrf=csrf_value(),
+            error=error,
+            configured=bool(list_admin_accounts()),
+        )
 
     @bp.post("/logout")
     @login_required
@@ -231,6 +393,91 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         return page("security", secret_key_source="SECRET_KEY env" if os.getenv("SECRET_KEY") else "локальный файл DATA_DIR/admin_session.key",
                     cookie_secure=app.config["SESSION_COOKIE_SECURE"],
                     password_configured=bool(os.getenv("ADMIN_PASSWORD")))
+
+    @bp.get("/access")
+    @owner_required
+    def access():
+        return page("access", admin_accounts=list_admin_accounts())
+
+    @bp.post("/access/add")
+    @owner_required
+    def access_add():
+        require_csrf()
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        role = request.form.get("role", "admin").strip().lower()
+
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
+            flash("Логин: 3–32 символа, латиница, цифры, точка, дефис или подчёркивание.", "error")
+            return redirect(url_for("admin.access"))
+        if len(password) < 12:
+            flash("Пароль должен содержать не менее 12 символов.", "error")
+            return redirect(url_for("admin.access"))
+        if role not in ("admin", "viewer"):
+            abort(400, description="Можно создать только администратора или пользователя с доступом на просмотр.")
+
+        try:
+            create_admin_account(username, password, role)
+        except sqlite3.IntegrityError:
+            flash("Пользователь с таким логином уже существует.", "error")
+            return redirect(url_for("admin.access"))
+
+        audit(f"создана учётная запись {username} с ролью {role}")
+        flash(f"Учётная запись {username} создана.", "success")
+        return redirect(url_for("admin.access"))
+
+    @bp.post("/access/<int:user_id>/toggle")
+    @owner_required
+    def access_toggle(user_id):
+        require_csrf()
+        if user_id == session.get("admin_user_id"):
+            flash("Нельзя отключить собственную учётную запись.", "error")
+            return redirect(url_for("admin.access"))
+
+        account = get_admin_by_id(user_id)
+        if not account:
+            abort(404)
+        if account["role"] == "owner":
+            flash("Нельзя отключить владельца панели.", "error")
+            return redirect(url_for("admin.access"))
+
+        new_active = 0 if account["active"] else 1
+        connection = connect_admin_db()
+        try:
+            connection.execute("UPDATE admin_users SET active = ? WHERE id = ?", (new_active, user_id))
+            connection.commit()
+        finally:
+            connection.close()
+
+        audit(f"{'включён' if new_active else 'отключён'} доступ пользователя {account['username']}")
+        flash(f"Доступ пользователя {account['username']} {'включён' if new_active else 'отключён'}.", "success")
+        return redirect(url_for("admin.access"))
+
+    @bp.post("/access/<int:user_id>/delete")
+    @owner_required
+    def access_delete(user_id):
+        require_csrf()
+        if user_id == session.get("admin_user_id"):
+            flash("Нельзя удалить собственную учётную запись.", "error")
+            return redirect(url_for("admin.access"))
+
+        account = get_admin_by_id(user_id)
+        if not account:
+            abort(404)
+        if account["role"] == "owner":
+            flash("Учётную запись владельца нельзя удалить из панели.", "error")
+            return redirect(url_for("admin.access"))
+
+        connection = connect_admin_db()
+        try:
+            connection.execute("DELETE FROM admin_users WHERE id = ?", (user_id,))
+            connection.commit()
+        finally:
+            connection.close()
+
+        audit(f"удалена учётная запись {account['username']}")
+        flash(f"Учётная запись {account['username']} удалена.", "success")
+        return redirect(url_for("admin.access"))
 
     @bp.get("/backup")
     @login_required
