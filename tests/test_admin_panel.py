@@ -774,8 +774,13 @@ def test_giveaway_datetime_parsing_and_human_only_participants(tmp_path, monkeyp
 
     parsed_utc = namespace["_parse_giveaway_draw_at"]("2026-11-10 20:00 UTC")
     parsed_offset = namespace["_parse_giveaway_draw_at"]("2026-11-10T22:00:00+02:00")
+    parsed_moscow = namespace["_parse_giveaway_draw_at"]("2026-11-10 23:10", "Europe/Moscow")
+    parsed_berlin = namespace["_parse_giveaway_draw_at"]("2026-11-10 23:10", "Europe/Berlin")
     assert parsed_utc == datetime(2026, 11, 10, 20, 0, tzinfo=timezone.utc)
     assert parsed_offset == parsed_utc
+    assert parsed_moscow == datetime(2026, 11, 10, 20, 10, tzinfo=timezone.utc)
+    assert parsed_berlin == datetime(2026, 11, 10, 22, 10, tzinfo=timezone.utc)
+    assert namespace["_parse_giveaway_draw_at"]("2026-11-10 23:10", "Not/A_Timezone") is None
     assert namespace["_parse_giveaway_draw_at"]("not-a-date") is None
 
     giveaway = {
@@ -817,9 +822,12 @@ def test_giveaway_datetime_parsing_and_human_only_participants(tmp_path, monkeyp
     assert view.is_persistent()
     assert view.children[0].custom_id == "spide_giveaway_join:giveaway-1"
     modal = namespace["GiveawayCreateModal"](1234, 2345, 3456, "Admin")
-    assert len(modal.children) == 4
+    assert len(modal.children) == 5
     assert modal.children[0].label == "Количество призовых мест (1–10)"
     assert modal.children[1].label == "Призы — каждый с новой строки"
+    assert modal.children[2].label == "Когда провести розыгрыш?"
+    assert modal.children[3].label == "Часовой пояс (IANA)"
+    assert modal.children[3].default == "Europe/Moscow"
 
     places, prizes, error = namespace["_parse_giveaway_prizes"](
         "5",
