@@ -817,7 +817,28 @@ def test_giveaway_datetime_parsing_and_human_only_participants(tmp_path, monkeyp
     assert view.is_persistent()
     assert view.children[0].custom_id == "spide_giveaway_join:giveaway-1"
     modal = namespace["GiveawayCreateModal"](1234, 2345, 3456, "Admin")
-    assert len(modal.children) == 3
+    assert len(modal.children) == 4
+    assert modal.children[0].label == "Количество призовых мест (1–10)"
+    assert modal.children[1].label == "Призы — каждый с новой строки"
+
+    places, prizes, error = namespace["_parse_giveaway_prizes"](
+        "5",
+        "Nitro 1 месяц\nNitro 1 месяц\nNitro 1 месяц\nNitro 1 месяц\nNitro 1 месяц",
+    )
+    assert error is None
+    assert places == 5
+    assert prizes == ["Nitro 1 месяц"] * 5
+
+    places, prizes, error = namespace["_parse_giveaway_prizes"](
+        "2",
+        "Discord Nitro\nSteam Gift Card\nRoblox Gift Card",
+    )
+    assert places is None and prizes is None
+    assert "призов: 3" in error
+
+    places, prizes, error = namespace["_parse_giveaway_prizes"]("11", "Prize")
+    assert places is None and prizes is None
+    assert "от 1 до 10" in error
 
 
 def test_due_giveaway_draws_and_publishes_a_human_winner(tmp_path, monkeypatch):
@@ -931,3 +952,80 @@ def test_giveaway_command_syncs_to_each_guild_immediately(tmp_path, monkeypatch)
     )
     assert registered.guild_only is True
     assert registered.default_permissions.administrator is True
+
+
+def test_multi_prize_giveaway_draws_unique_winners_for_each_available_place(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-multi-prize-draw")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_multi_prize_draw_test",
+    )
+
+    draw_at = datetime(2026, 11, 10, 20, 0, tzinfo=timezone.utc)
+    prizes = ["Nitro 1 месяц"] * 5
+    namespace["_save_giveaways"]({
+        "multi-draw": {
+            "guild_id": 1234,
+            "channel_id": 2345,
+            "message_id": 5678,
+            "creator_name": "Admin",
+            "prize": prizes[0],
+            "prizes": prizes,
+            "places_count": 5,
+            "conditions": "Be a member",
+            "draw_at": draw_at.isoformat(),
+            "participants": [111, 222, 333],
+            "status": "active",
+        }
+    })
+
+    class FakeMessage:
+        def __init__(self):
+            self.edited = None
+
+        async def edit(self, **kwargs):
+            self.edited = kwargs
+
+    class FakeChannel:
+        def __init__(self):
+            self.message = FakeMessage()
+
+        async def fetch_message(self, message_id):
+            assert message_id == 5678
+            return self.message
+
+    channel = FakeChannel()
+    monkeypatch.setattr(namespace["bot"], "get_channel", lambda channel_id: channel)
+
+    asyncio.run(namespace["_process_due_giveaways"](draw_at + timedelta(minutes=1)))
+
+    saved = namespace["_load_giveaways"]()["multi-draw"]
+    winners = saved["winner_ids"]
+    assert saved["status"] == "drawn"
+    assert len(winners) == 3
+    assert len(set(winners)) == 3
+    assert set(winners).issubset({111, 222, 333})
+    assert saved["winner_id"] == winners[0]
+    assert saved["result_published"] is True
+
+    result_fields = [
+        field for field in channel.message.edited["embed"].fields
+        if "Результаты" in field.name
+    ]
+    result_text = "\n".join(field.value for field in result_fields)
+    assert result_text.count("победителя нет") == 2
+    for winner in winners:
+        assert f"<@{winner}>" in result_text
+    assert channel.message.edited["view"].children[0].disabled is True
