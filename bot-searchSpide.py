@@ -13,6 +13,7 @@ import re
 import threading
 import json
 import collections
+import secrets
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from dashboard.admin_panel import register_admin_panel
 
@@ -41,6 +42,8 @@ logger.addHandler(console_handler)
 # ==============================
 DATA_DIR = os.getenv("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
+GIVEAWAY_STORAGE_LOCK = threading.RLock()
 
 DEFAULT_CONFIG = {
     "config_version": 2,
@@ -116,6 +119,330 @@ def save_config(config):
         logging.error(f"Ошибка сохранения конфига: {e}")
 
 app_config = load_config()
+
+def _load_giveaways():
+    """Load active and completed giveaways from persistent storage."""
+    with GIVEAWAY_STORAGE_LOCK:
+        if not os.path.exists(GIVEAWAYS_FILE):
+            return {}
+        try:
+            with open(GIVEAWAYS_FILE, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            logging.exception("Не удалось прочитать файл розыгрышей")
+            return {}
+
+
+def _save_giveaways(giveaways):
+    """Atomically persist giveaway state so entries survive bot restarts."""
+    with GIVEAWAY_STORAGE_LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        temporary_path = GIVEAWAYS_FILE + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as file:
+            json.dump(giveaways, file, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, GIVEAWAYS_FILE)
+
+
+def _parse_giveaway_draw_at(value):
+    """Parse an ISO date/time; naive values are explicitly interpreted as UTC."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw[:-4].strip() + "+00:00" if raw.upper().endswith(" UTC") else raw
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.datetime.strptime(raw, "%d.%m.%Y %H:%M")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _register_giveaway_participant(giveaway_id, guild_id, user):
+    """Register a human member from the giveaway's own server only."""
+    giveaways = _load_giveaways()
+    giveaway = giveaways.get(str(giveaway_id))
+    if giveaway is None:
+        return "missing", None
+    if str(giveaway.get("guild_id")) != str(guild_id):
+        return "wrong_guild", giveaway
+    if giveaway.get("status") != "active":
+        return "ended", giveaway
+    if getattr(user, "bot", False):
+        return "bot", giveaway
+
+    try:
+        user_id = int(user.id)
+    except (AttributeError, TypeError, ValueError):
+        return "invalid_user", giveaway
+
+    participants = [int(value) for value in giveaway.get("participants", [])]
+    if user_id in participants:
+        return "duplicate", giveaway
+    participants.append(user_id)
+    giveaway["participants"] = participants
+    _save_giveaways(giveaways)
+    return "added", giveaway
+
+
+def _build_giveaway_embed(giveaway):
+    """Build the public giveaway card and its final winner announcement."""
+    draw_at = _parse_giveaway_draw_at(giveaway.get("draw_at"))
+    timestamp = int(draw_at.timestamp()) if draw_at else 0
+    participants = giveaway.get("participants", [])
+    embed = discord.Embed(
+        title="🎉 РОЗЫГРЫШ",
+        description=f"**{str(giveaway.get('prize', 'Приз'))[:256]}**",
+        color=ORANGE,
+    )
+    embed.add_field(
+        name="📜 Условия участия",
+        value=(str(giveaway.get("conditions") or "").strip()[:1024] or "Без дополнительных условий."),
+        inline=False,
+    )
+    if giveaway.get("status") == "active":
+        embed.add_field(
+            name="⏰ Когда итоги",
+            value=f"<t:{timestamp}:F>\n<t:{timestamp}:R>" if timestamp else "Время не задано",
+            inline=True,
+        )
+        embed.add_field(name="👥 Участников", value=str(len(participants)), inline=True)
+        embed.set_footer(text=f"Организатор: {giveaway.get('creator_name', 'Администратор')} • Нажми кнопку, чтобы участвовать")
+    else:
+        winner_id = giveaway.get("winner_id")
+        winner_text = f"🏆 Победитель: <@{winner_id}>" if winner_id else "😕 Никто не участвовал — победителя нет."
+        embed.add_field(name="🎊 Результат", value=winner_text, inline=False)
+        embed.add_field(name="👥 Участников", value=str(len(participants)), inline=True)
+        embed.set_footer(text=f"Розыгрыш завершён • Организатор: {giveaway.get('creator_name', 'Администратор')}")
+    return embed
+
+
+class GiveawayJoinView(discord.ui.View):
+    """Persistent entry button for a giveaway announcement."""
+
+    def __init__(self, giveaway_id, participant_count=0, disabled=False):
+        super().__init__(timeout=None)
+        self.giveaway_id = str(giveaway_id)
+        self.join_button = discord.ui.Button(
+            label="Розыгрыш завершён" if disabled else f"Участвовать ({participant_count})",
+            emoji="🎉",
+            style=discord.ButtonStyle.secondary if disabled else discord.ButtonStyle.success,
+            custom_id=f"spide_giveaway_join:{self.giveaway_id}",
+            disabled=disabled,
+        )
+        self.join_button.callback = self._join
+        self.add_item(self.join_button)
+
+    async def _join(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ Участвовать можно только на сервере, где опубликован розыгрыш.", ephemeral=True)
+            return
+        status, giveaway = _register_giveaway_participant(
+            self.giveaway_id,
+            interaction.guild.id,
+            interaction.user,
+        )
+        messages = {
+            "missing": "❌ Розыгрыш не найден.",
+            "wrong_guild": "❌ Этот розыгрыш проводится на другом сервере.",
+            "ended": "⏰ Этот розыгрыш уже завершён.",
+            "bot": "🤖 Боты не могут участвовать в розыгрышах.",
+            "duplicate": "Ты уже участвуешь в этом розыгрыше 🎉",
+            "invalid_user": "❌ Не удалось определить твой аккаунт.",
+        }
+        if status != "added":
+            await interaction.response.send_message(messages.get(status, "❌ Не удалось присоединиться."), ephemeral=True)
+            return
+
+        self.join_button.label = f"Участвовать ({len(giveaway.get('participants', []))})"
+        await interaction.response.edit_message(
+            embed=_build_giveaway_embed(giveaway),
+            view=self,
+        )
+
+
+_registered_giveaway_views = set()
+
+
+def _register_persistent_giveaway_view(giveaway_id, message_id, participant_count=0, disabled=False):
+    key = str(giveaway_id)
+    if key in _registered_giveaway_views:
+        return
+    bot.add_view(
+        GiveawayJoinView(key, participant_count=participant_count, disabled=disabled),
+        message_id=int(message_id),
+    )
+    _registered_giveaway_views.add(key)
+
+
+async def _restore_giveaway_views():
+    """Re-register giveaway buttons after reconnects or restarts."""
+    for giveaway_id, giveaway in _load_giveaways().items():
+        status = giveaway.get("status")
+        needs_view = status == "active" or (status == "drawn" and not giveaway.get("result_published"))
+        if needs_view and giveaway.get("message_id"):
+            try:
+                _register_persistent_giveaway_view(
+                    giveaway_id,
+                    giveaway["message_id"],
+                    participant_count=len(giveaway.get("participants", [])),
+                    disabled=status != "active",
+                )
+            except (ValueError, TypeError):
+                logging.exception("Не удалось восстановить кнопку розыгрыша %s", giveaway_id)
+
+
+async def _process_due_giveaways(now=None):
+    """Draw winners for due giveaways and retry publishing results after restarts."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    giveaways = _load_giveaways()
+    for giveaway_id, giveaway in giveaways.items():
+        if giveaway.get("status") == "active":
+            draw_at = _parse_giveaway_draw_at(giveaway.get("draw_at"))
+            if draw_at is None or draw_at > now:
+                continue
+
+            entrants = [
+                int(value) for value in giveaway.get("participants", [])
+                if str(value).isdigit()
+            ]
+            giveaway["status"] = "drawn"
+            giveaway["winner_id"] = secrets.choice(entrants) if entrants else None
+            giveaway["drawn_at"] = now.astimezone(datetime.timezone.utc).isoformat()
+            giveaway["result_published"] = False
+            _save_giveaways(giveaways)
+        elif giveaway.get("status") != "drawn" or giveaway.get("result_published"):
+            continue
+
+        entrants = [
+            int(value) for value in giveaway.get("participants", [])
+            if str(value).isdigit()
+        ]
+        winner_id = giveaway.get("winner_id")
+        try:
+            channel_id = int(giveaway.get("channel_id", 0))
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            message = await channel.fetch_message(int(giveaway.get("message_id", 0)))
+            await message.edit(
+                embed=_build_giveaway_embed(giveaway),
+                view=GiveawayJoinView(
+                    giveaway_id,
+                    participant_count=len(entrants),
+                    disabled=True,
+                ),
+            )
+            giveaway["result_published"] = True
+            _save_giveaways(giveaways)
+            logging.info(
+                "Розыгрыш %s завершён на сервере %s; участников: %s; победитель: %s",
+                giveaway_id,
+                giveaway.get("guild_id"),
+                len(entrants),
+                winner_id or "нет",
+            )
+        except Exception:
+            logging.exception("Не удалось опубликовать итоги розыгрыша %s", giveaway_id)
+
+
+class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгрыша"):
+    prize = discord.ui.TextInput(
+        label="Что разыгрываем?",
+        placeholder="Например: Discord Nitro на 1 месяц",
+        max_length=150,
+        style=discord.TextStyle.short,
+    )
+    draw_time = discord.ui.TextInput(
+        label="Когда провести розыгрыш? (UTC)",
+        placeholder="2026-11-10 20:00 UTC",
+        max_length=40,
+        style=discord.TextStyle.short,
+    )
+    conditions = discord.ui.TextInput(
+        label="Условия участия",
+        placeholder="Например: быть участником сервера и подписаться на канал",
+        max_length=1000,
+        required=False,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, guild_id, channel_id, creator_id, creator_name):
+        super().__init__(timeout=300)
+        self.guild_id = int(guild_id)
+        self.channel_id = int(channel_id)
+        self.creator_id = int(creator_id)
+        self.creator_name = str(creator_name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.creator_id or interaction.guild is None or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("❌ Эту форму может отправить только создавший её администратор этого сервера.", ephemeral=True)
+            return
+        if not await _require_administrator(interaction):
+            return
+
+        prize_text = str(self.prize.value or "").strip()
+        draw_at = _parse_giveaway_draw_at(self.draw_time.value)
+        if not prize_text:
+            await interaction.response.send_message("❌ Укажи, что разыгрывается.", ephemeral=True)
+            return
+        if draw_at is None:
+            await interaction.response.send_message(
+                "❌ Не понял дату. Используй формат ГГГГ-ММ-ДД ЧЧ:ММ UTC, например 2026-11-10 20:00 UTC.",
+                ephemeral=True,
+            )
+            return
+        if draw_at <= datetime.datetime.now(datetime.timezone.utc):
+            await interaction.response.send_message("❌ Время розыгрыша должно быть в будущем.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        channel = bot.get_channel(self.channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(self.channel_id)
+            except discord.HTTPException:
+                channel = None
+        if channel is None or not hasattr(channel, "send"):
+            await interaction.followup.send("❌ Не удалось найти канал, в котором вызвали команду.", ephemeral=True)
+            return
+
+        giveaway_id = secrets.token_hex(6)
+        giveaway = {
+            "guild_id": self.guild_id,
+            "channel_id": self.channel_id,
+            "creator_id": self.creator_id,
+            "creator_name": self.creator_name,
+            "prize": prize_text,
+            "conditions": str(self.conditions.value or "").strip(),
+            "draw_at": draw_at.isoformat(),
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "participants": [],
+            "status": "active",
+        }
+        view = GiveawayJoinView(giveaway_id)
+        try:
+            message = await channel.send(embed=_build_giveaway_embed(giveaway), view=view)
+            giveaway["message_id"] = int(message.id)
+            all_giveaways = _load_giveaways()
+            all_giveaways[giveaway_id] = giveaway
+            _save_giveaways(all_giveaways)
+            _register_persistent_giveaway_view(giveaway_id, message.id)
+        except Exception:
+            logging.exception("Не удалось создать розыгрыш на сервере %s", self.guild_id)
+            await interaction.followup.send("❌ Не удалось опубликовать розыгрыш. Проверь права бота и попробуй ещё раз.", ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            f"✅ Розыгрыш опубликован: [перейти к сообщению]({message.jump_url}).",
+            ephemeral=True,
+        )
+
+
 
 # ==============================
 # BOT SETUP
@@ -866,6 +1193,11 @@ async def automation_scheduler():
             save_config(app_config)
             await _publish_daily_top()
 
+    try:
+        await _process_due_giveaways(now)
+    except Exception:
+        logging.exception("Ошибка обработки запланированных розыгрышей")
+
 register_admin_panel(
     web_app,
     bot,
@@ -902,6 +1234,8 @@ async def on_ready():
         bot.add_view(RoleSelectView())
         _persistent_role_view_registered = True
         logging.info("Постоянное меню выбора ролей зарегистрировано")
+
+    await _restore_giveaway_views()
 
     if not _slash_commands_synced:
         try:
@@ -1175,6 +1509,25 @@ async def slash_top(interaction: discord.Interaction):
             "❌ Не удалось получить топ. Проверь SPIDE_COOKIE и логи бота.",
             ephemeral=False,
         )
+
+
+@bot.tree.command(name="розыгрыш", description="Создать розыгрыш на этом сервере")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def slash_giveaway(interaction: discord.Interaction):
+    if not await _require_administrator(interaction):
+        return
+    if interaction.channel is None or interaction.guild is None:
+        await interaction.response.send_message("❌ Команду можно использовать только на сервере.", ephemeral=True)
+        return
+    await interaction.response.send_modal(
+        GiveawayCreateModal(
+            guild_id=interaction.guild.id,
+            channel_id=interaction.channel.id,
+            creator_id=interaction.user.id,
+            creator_name=getattr(interaction.user, "display_name", interaction.user.name),
+        )
+    )
 
 
 @bot.tree.command(name="links", description="Официальные ссылки Spide")
