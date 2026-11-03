@@ -170,6 +170,30 @@ def _parse_giveaway_draw_at(value, timezone_name="Europe/Moscow"):
     return parsed.astimezone(datetime.timezone.utc)
 
 
+def _parse_giveaway_local_draw_at(value, timezone_name):
+    """Parse a wall-clock time strictly in the selected zone; reject UTC/offset suffixes."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        selected_timezone = ZoneInfo(str(timezone_name or ""))
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return None
+
+    parsed = None
+    for date_format in ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M"):
+        try:
+            parsed = datetime.datetime.strptime(raw, date_format)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        return None
+
+    local_time = parsed.replace(tzinfo=selected_timezone)
+    return local_time.astimezone(datetime.timezone.utc)
+
+
 def _register_giveaway_participant(giveaway_id, guild_id, user):
     """Register a human member from the giveaway's own server only."""
     giveaways = _load_giveaways()
@@ -251,12 +275,16 @@ def _build_giveaway_embed(giveaway):
         inline=False,
     )
     if giveaway.get("status") == "active":
+        local_draw_at = draw_at.astimezone(
+            ZoneInfo(giveaway.get("timezone", "UTC"))
+        ) if draw_at else None
         embed.add_field(
             name="⏰ Когда итоги",
             value=(
                 f"<t:{timestamp}:F>\n<t:{timestamp}:R>\n"
-                f"Часовой пояс организатора: {giveaway.get('timezone', 'UTC')}"
-                if timestamp else "Время не задано"
+                f"Время организатора: **{local_draw_at.strftime('%d.%m.%Y %H:%M')}**\n"
+                f"Часовой пояс: {giveaway.get('timezone', 'UTC')}"
+                if timestamp and local_draw_at else "Время не задано"
             ),
             inline=True,
         )
@@ -480,13 +508,14 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
                 ephemeral=True,
             )
             return
-        draw_at = _parse_giveaway_draw_at(self.draw_time.value, timezone_name)
+        raw_draw_time = str(self.draw_time.value or "").strip()
+        draw_at = _parse_giveaway_local_draw_at(raw_draw_time, timezone_name)
         if prize_error:
             await interaction.response.send_message(f"❌ {prize_error}", ephemeral=True)
             return
         if draw_at is None:
             await interaction.response.send_message(
-                "❌ Не понял дату. Используй формат ГГГГ-ММ-ДД ЧЧ:ММ, например 2026-11-10 23:10. Время будет рассчитано по указанному часовому поясу.",
+                "❌ Не понял дату. Введи только ГГГГ-ММ-ДД ЧЧ:ММ, например 2026-11-10 23:10. Не добавляй UTC или смещение часового пояса — оно берётся из отдельного поля.",
                 ephemeral=True,
             )
             return
@@ -521,6 +550,15 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
             "participants": [],
             "status": "active",
         }
+        local_draw_at = draw_at.astimezone(ZoneInfo(timezone_name))
+        logging.info(
+            "GIVEAWAY_SCHEDULED | giveaway_id=%s | raw_time=%r | timezone=%s | draw_at_utc=%s | draw_at_local=%s",
+            giveaway_id,
+            raw_draw_time,
+            timezone_name,
+            draw_at.isoformat(),
+            local_draw_at.isoformat(),
+        )
         view = GiveawayJoinView(giveaway_id)
         try:
             message = await channel.send(embed=_build_giveaway_embed(giveaway), view=view)
@@ -534,8 +572,11 @@ class GiveawayCreateModal(discord.ui.Modal, title="Создание розыгр
             await interaction.followup.send("❌ Не удалось опубликовать розыгрыш. Проверь права бота и попробуй ещё раз.", ephemeral=True)
             return
 
+        draw_timestamp = int(draw_at.timestamp())
         await interaction.followup.send(
-            f"✅ Розыгрыш на {places_count} мест опубликован: [перейти к сообщению]({message.jump_url}).",
+            f"✅ Розыгрыш на {places_count} мест опубликован: [перейти к сообщению]({message.jump_url}).\n"
+            f"Итоги запланированы на <t:{draw_timestamp}:F> (<t:{draw_timestamp}:R>).\n"
+            f"Местное время организатора: **{local_draw_at.strftime('%d.%m.%Y %H:%M')}** ({timezone_name}).",
             ephemeral=True,
         )
 

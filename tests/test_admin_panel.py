@@ -782,6 +782,23 @@ def test_giveaway_datetime_parsing_and_human_only_participants(tmp_path, monkeyp
     assert parsed_berlin == datetime(2026, 11, 10, 22, 10, tzinfo=timezone.utc)
     assert namespace["_parse_giveaway_draw_at"]("2026-11-10 23:10", "Not/A_Timezone") is None
     assert namespace["_parse_giveaway_draw_at"]("not-a-date") is None
+    # Giveaway form is wall-clock time in the selected zone. An old-style UTC suffix
+    # must be rejected rather than silently overriding the selected zone.
+    local_moscow = namespace["_parse_giveaway_local_draw_at"](
+        "2026-11-10 23:19", "Europe/Moscow"
+    )
+    local_berlin = namespace["_parse_giveaway_local_draw_at"](
+        "2026-11-10 23:19", "Europe/Berlin"
+    )
+    assert local_moscow == datetime(2026, 11, 10, 20, 19, tzinfo=timezone.utc)
+    assert local_berlin == datetime(2026, 11, 10, 22, 19, tzinfo=timezone.utc)
+    assert namespace["_parse_giveaway_local_draw_at"](
+        "2026-11-10 23:19 UTC", "Europe/Moscow"
+    ) is None
+    assert namespace["_parse_giveaway_local_draw_at"](
+        "2026-11-10 23:19+03:00", "Europe/Moscow"
+    ) is None
+
 
     giveaway = {
         "guild_id": 1234,
