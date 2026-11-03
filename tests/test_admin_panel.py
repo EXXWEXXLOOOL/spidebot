@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import urlsplit
 
 from flask import Flask
 
@@ -41,7 +42,7 @@ def test_admin_requires_login(tmp_path):
     client = build_client(tmp_path)
     response = client.get("/admin/")
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/admin/login")
+    assert urlsplit(response.headers["Location"]).path == "/admin/login"
 
 
 def test_login_requires_csrf_and_accepts_valid_credentials(tmp_path):
