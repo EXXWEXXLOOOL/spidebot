@@ -161,7 +161,6 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
     assert {
         "search", "поиск",
         "top", "топ",
-        "розыгрыш",
         "links", "ссылки",
         "checktg", "проверить_тг",
         "rules", "правила",
@@ -176,13 +175,19 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
         "checktg", "проверить_тг",
         "setup_roles", "роли",
         "commands", "команды",
-        "розыгрыш",
     )
     for command_name in admin_only_commands:
         command = tree_commands[command_name]
         assert command.guild_only is True
         assert command.default_permissions is not None
         assert command.default_permissions.administrator is True
+
+    giveaway_command = namespace["slash_giveaway"]
+    assert giveaway_command.name == "розыгрыш"
+    assert giveaway_command.guild_only is True
+    assert giveaway_command.default_permissions is not None
+    assert giveaway_command.default_permissions.administrator is True
+    assert "розыгрыш" not in slash_names
 
 def test_leaderboard_medals_are_only_used_for_top_three(tmp_path, monkeypatch):
     import runpy
@@ -879,3 +884,50 @@ def test_due_giveaway_draws_and_publishes_a_human_winner(tmp_path, monkeypatch):
         field.value for field in channel.message.edited["embed"].fields
     )
     assert f"<@{saved['winner_id']}>" in result_text
+
+
+def test_giveaway_command_syncs_to_each_guild_immediately(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+    import discord
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-guild-giveaway-sync")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_guild_giveaway_sync_test",
+    )
+
+    bot = namespace["bot"]
+    sync_calls = []
+
+    async def fake_sync(*, guild=None):
+        sync_calls.append(guild.id)
+        return [SimpleNamespace(name="розыгрыш")]
+
+    monkeypatch.setattr(bot.tree, "sync", fake_sync)
+    guild = SimpleNamespace(id=987654321, name="Test server")
+    synced = asyncio.run(namespace["_sync_giveaway_command_for_guild"](guild))
+
+    assert sync_calls == [987654321]
+    assert synced[0].name == "розыгрыш"
+    assert bot.tree.get_command(
+        "розыгрыш",
+        guild=discord.Object(id=987654321),
+    ) is not None
+    assert bot.tree.get_command("розыгрыш") is None
+
+    registered = bot.tree.get_command(
+        "розыгрыш",
+        guild=discord.Object(id=987654321),
+    )
+    assert registered.guild_only is True
+    assert registered.default_permissions.administrator is True
