@@ -1020,49 +1020,39 @@ def _build_commands_embed(author):
     embed = discord.Embed(
         title="📋 Команды SpideBot",
         description=(
-            "Выбирай удобный формат: slash-команды начинаются с /, "
-            "старые текстовые команды — с !. Русские и английские варианты работают одинаково."
+            "Все команды вызываются через меню Discord slash-команд. "
+            "Доступны русские и английские названия."
         ),
         color=ORANGE,
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(
         name="🎵 Поиск музыки",
-        value=(
-            "**Slash:** \`/search\` или \`/поиск\` — введи запрос в поле \`query\` / \`запрос\`. "
-            "Пример: \`/поиск\` → \`Дора\`.\n"
-            "**Текст:** \`!search Despacito\` или \`!поиск Дора\`."
-        ),
+        value="`/search` или `/поиск` — найти трек, альбом или исполнителя. Введи название в поле запроса.",
         inline=False,
     )
     embed.add_field(
         name="🏆 Топ слушателей",
-        value="**Slash:** \`/top\` или \`/топ\`.\n**Текст:** \`!top\` или \`!топ\`.",
+        value="`/top` или `/топ` — опубликовать актуальный топ слушателей в этом канале.",
         inline=False,
     )
     embed.add_field(
         name="🔗 Полезные ссылки",
-        value="**Slash:** \`/links\` или \`/ссылки\`.\n**Текст:** \`!links\` или \`!ссылки\`.",
+        value="`/links` или `/ссылки` — официальные ресурсы Spide.",
         inline=False,
     )
     embed.add_field(
         name="🎭 Выбор роли",
         value=(
-            "**Для администратора:** \`/setup_roles\`, \`/роли\`, \`!setup_roles\` или \`!роли\` — "
-            "опубликовать меню выбора платформы.\n"
-            "**Для участника:** нажми кнопку **Android**, **Web** или **Desktop** под меню. "
+            "`/setup_roles` или `/роли` — команда для администратора, публикует меню выбора платформы.\n"
+            "Участнику нужно нажать **Android**, **Web** или **Desktop** под меню. "
             "Повторное нажатие снимает выбранную роль."
         ),
         inline=False,
     )
     embed.add_field(
-        name="📜 Сообщество и Telegram",
-        value=(
-            "\`/rules\` или \`/правила\` — правила сервера.\n"
-            "\`/checktg\` или \`/проверить_тг\` — проверить Telegram-каналы (для администраторов).\n"
-            "\`/commands\` или \`/команды\` — эта справка.\n"
-            "Старые варианты: \`!rules\`, \`!правила\`, \`!checktg\`, \`!проверить_тг\`, \`!commands\`, \`!команды\`."
-        ),
+        name="📜 Сообщество",
+        value="`/rules` или `/правила` — правила сообщества.\n`/commands` или `/команды` — эта справка.",
         inline=False,
     )
     embed.set_footer(
@@ -1105,87 +1095,6 @@ async def _handle_slash_search(interaction: discord.Interaction, query: str):
         await interaction.followup.send("❌ Не удалось выполнить поиск. Попробуй ещё раз позже.")
 
 
-@bot.command(name="setup_roles", aliases=["роли"])
-@commands.has_permissions(administrator=True)
-async def setup_roles(ctx):
-    await ctx.send(embed=_build_role_select_embed(), view=RoleSelectView())
-    try:
-        await ctx.message.delete()
-    except discord.Forbidden:
-        logging.debug("Нет права удалять сообщение с командой setup_roles")
-
-
-@bot.command(name="rules", aliases=["правила"])
-async def rules(ctx):
-    try:
-        await ctx.message.delete()
-    except discord.Forbidden:
-        logging.debug("Нет права удалять сообщение с командой rules")
-    await ctx.send(embed=_build_rules_embed(ctx.author))
-
-
-@bot.command(name="search", aliases=["поиск"])
-async def search(ctx, *, query: str = None):
-    global app_config
-    app_config = load_config()
-    cookie = app_config.get("SPIDE_COOKIE", "")
-    if not query or not query.strip():
-        await ctx.send("Напиши название трека.\nПример: !search Despacito или !поиск Дора")
-        return
-    if not cookie:
-        await ctx.send("Ошибка: Куки Spide не настроены.")
-        return
-    msg = await ctx.send("🔎 Ищу треки в Spide...")
-    headers = {
-        "accept": "application/json",
-        "referer": "https://web.spide.ru/search",
-        "user-agent": "Mozilla/5.0",
-        "Cookie": cookie,
-    }
-    try:
-        data = await asyncio.to_thread(search_spide, query.strip(), headers)
-        tracks = data.get("tracks", [])
-        if not tracks:
-            await msg.edit(content=f"По запросу {query[:150]} ничего не найдено.")
-            return
-        embed, track_url = create_track_embed(tracks[0], ctx.author, query.strip())
-        await msg.edit(content=None, embed=embed, view=TrackView(track_url))
-    except Exception:
-        logging.exception("Ошибка поиска Spide")
-        await msg.edit(content="❌ Не удалось выполнить поиск. Попробуй ещё раз позже.")
-
-
-@bot.command(name="top", aliases=["топ"])
-async def top_now(ctx):
-    msg = await ctx.send("⏳ Собираю топ-10...")
-    success = await force_top(ctx.channel)
-    if success:
-        await msg.delete()
-    else:
-        await msg.edit(content="❌ Не удалось получить топ.")
-
-
-@bot.command(name="checktg", aliases=["проверить_тг"])
-async def checktg_now(ctx):
-    await ctx.send("🔍 Проверяю все Telegram-каналы...")
-    await force_checktg()
-    await ctx.send("✅ Проверка завершена!")
-
-
-@bot.command(name="links", aliases=["ссылки"])
-async def links(ctx):
-    await ctx.send(embed=_build_links_embed(ctx.author))
-
-
-@bot.command(name="commands", aliases=["команды"])
-async def commands_list(ctx):
-    try:
-        await ctx.message.delete()
-    except discord.Forbidden:
-        logging.debug("Нет права удалять сообщение с командой commands")
-    await ctx.send(embed=_build_commands_embed(ctx.author))
-
-
 @bot.tree.command(name="search", description="Найти трек, альбом или исполнителя")
 @app_commands.describe(query="Название трека или исполнителя")
 async def slash_search(interaction: discord.Interaction, query: str):
@@ -1194,12 +1103,23 @@ async def slash_search(interaction: discord.Interaction, query: str):
 
 @bot.tree.command(name="top", description="Показать топ слушателей Spide")
 async def slash_top(interaction: discord.Interaction):
+    logging.info(
+        "Slash /top вызвана пользователем %s в канале %s",
+        interaction.user.id,
+        getattr(interaction.channel, "id", None),
+    )
     if not await _slash_permission_allowed(interaction, "top"):
         return
+
     await interaction.response.defer(ephemeral=True, thinking=True)
     success = await force_top(interaction.channel)
-    message = "✅ Топ опубликован в этом канале." if success else "❌ Не удалось получить топ. Проверь настройки Spide и логи."
-    await interaction.followup.send(message, ephemeral=True)
+    if success:
+        await interaction.followup.send("✅ Топ опубликован в этом канале.", ephemeral=True)
+    else:
+        await interaction.followup.send(
+            "❌ Не удалось получить топ. Проверь SPIDE_COOKIE и логи бота.",
+            ephemeral=True,
+        )
 
 
 @bot.tree.command(name="links", description="Официальные ссылки Spide")
@@ -1257,7 +1177,7 @@ async def slash_search_ru(interaction: discord.Interaction, запрос: str):
 
 @bot.tree.command(name="топ", description="Показать топ слушателей Spide")
 async def slash_top_ru(interaction: discord.Interaction):
-    await slash_top.callback(interaction)
+    await slash_top(interaction)
 
 
 @bot.tree.command(name="ссылки", description="Официальные ссылки Spide")
