@@ -92,6 +92,8 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
             permissions=cfg.get("permissions", {}),
             logs=logs[-200:],
             admin_username=os.getenv("ADMIN_USERNAME", "admin"),
+            # The shared template evaluates chart placeholders on every page.
+            level_counts={"INFO": 0, "WARNING": 0, "ERROR": 0},
         )
         context.update(extra)
         return render_template("admin.html", **context)
