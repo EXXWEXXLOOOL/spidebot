@@ -167,7 +167,8 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
         "setup_roles", "роли",
         "commands", "команды",
     } <= slash_names
-    assert namespace["bot"].get_command("поиск") is not None
+    assert namespace["bot"].get_command("поиск") is None
+    assert namespace["bot"].get_command("search") is None
 
 def test_leaderboard_medals_are_only_used_for_top_three(tmp_path, monkeypatch):
     import runpy
@@ -393,5 +394,7 @@ def test_role_selector_validation_and_command_help(tmp_path, monkeypatch):
     assert "/search" in help_text and "/поиск" in help_text
     assert "/setup_roles" in help_text and "/роли" in help_text
     assert "Повторное нажатие снимает выбранную роль" in help_text
-    assert "!commands" in help_text
+    assert "!commands" not in help_text
+    assert "!checktg" not in help_text
+    assert "/checktg" not in help_text
 
