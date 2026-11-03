@@ -132,3 +132,24 @@ def test_moderation_is_disabled_by_default(tmp_path):
         "user_id": "123456789012345678",
     })
     assert response.status_code == 403
+
+def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
+    import runpy
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-import-smoke-test")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_import_smoke_test",
+    )
+    assert "bot" in namespace
+    assert "web_app" in namespace
+    assert "admin" in namespace["web_app"].blueprints
+
