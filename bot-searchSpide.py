@@ -45,7 +45,22 @@ DEFAULT_CONFIG = {
     "SPIDE_COOKIE": os.getenv("SPIDE_COOKIE", ""),
     "tg_channels": ["dsdedmak0193"],
     "last_ids": {"dsdedmak0193": 0},
-    "permissions": {}
+    "permissions": {},
+    "automation": {
+        "telegram_enabled": True,
+        "telegram_interval_minutes": 10,
+        "daily_top_enabled": True,
+        "daily_top_hour_utc": 0,
+        "daily_top_minute_utc": 22
+    },
+    "automation_state": {},
+    "notifications": {
+        "enabled": False,
+        "channel_id": 0,
+        "notify_startup": True,
+        "notify_disconnect": True,
+        "notify_errors": False
+    }
 }
 
 def load_config():
@@ -534,34 +549,57 @@ async def force_top(target_channel):
         date_str = data.get("day", "Сегодня")
 
         embed = discord.Embed(
-            title="🏆 Топ-10 слушателей Spide", 
-            description=f"**Обновлено за:** {date_str}\n**Всего участников:** `{total}`", 
+            title="🏆 SPIDE MUSIC — ТОП СЛУШАТЕЛЕЙ",
+            description=(
+                f"**Период:** {date_str}  •  **Участников:** `{total}`\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
             color=ORANGE,
             timestamp=discord.utils.utcnow()
         )
+        embed.set_author(name="SPIDE  /  LISTENER RANKING")
 
         medals = ["🥇", "🥈", "🥉"]
-        
+        podium_labels = ["ПЕРВОЕ МЕСТО", "ВТОРОЕ МЕСТО", "ТРЕТЬЕ МЕСТО"]
+
+        def safe_score(value):
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        def format_score(value):
+            return f"{safe_score(value):,}".replace(",", " ")
+
         for i, row in enumerate(top_10[:3]):
-            user = row.get("user", {})
-            name = user.get("displayName") or "Неизвестно"
-            score = row.get("score", 0)
-            formatted_score = f"{score:,}".replace(",", " ")
-            embed.add_field(name=f"{medals[i]} {i+1} место", value=f"**{name}**\n`{formatted_score}` мин", inline=True)
-            if i == 0 and user.get("photoUrl"): embed.set_thumbnail(url=user["photoUrl"])
+            user = row.get("user") or {}
+            name = str(user.get("displayName") or "Неизвестно")[:70]
+            score = format_score(row.get("score"))
+            embed.add_field(
+                name=f"{medals[i]}  {podium_labels[i]}",
+                value=f"**{name}**\n`{score}` минут",
+                inline=True
+            )
+            if i == 0 and user.get("photoUrl"):
+                photo = user["photoUrl"]
+                if isinstance(photo, str) and photo.startswith(("https://", "http://")):
+                    embed.set_thumbnail(url=photo)
 
         if len(top_10) > 3:
-            other_places = ""
-            for i, row in enumerate(top_10[3:], 4):
-                user = row.get("user", {})
-                name = user.get("displayName") or "Неизвестно"
-                score = row.get("score", 0)
-                formatted_score = f"{score:,}".replace(",", " ")
-                other_places += f"`{i:02d}.` **{name}** — `{formatted_score}` мин\n"
-            embed.add_field(name="Остальные", value=other_places, inline=False)
+            lines = []
+            rank_emojis = {4: "🏅", 5: "🎖️", 6: "🔸", 7: "🔸", 8: "🔸", 9: "🔸", 10: "🔸"}
+            for i, row in enumerate(top_10[3:10], 4):
+                user = row.get("user") or {}
+                name = str(user.get("displayName") or "Неизвестно")[:65]
+                score = format_score(row.get("score"))
+                lines.append(f"{rank_emojis.get(i, '▫️')} **{i:02d}. {name}**  ·  `{score}` мин")
+            embed.add_field(
+                name="📋 ОСТАЛЬНЫЕ УЧАСТНИКИ",
+                value="\n".join(lines),
+                inline=False
+            )
 
-        embed.set_footer(text="SPIDE MUSIC  •  Автоматическое обновление")
-        await target_channel.send(embed=embed)
+        embed.set_footer(text="SPIDE MUSIC  •  Ежедневный рейтинг")
         return True
     except Exception as e:
             err_msg = f"❌ Ошибка получения топа: `{e}`"
