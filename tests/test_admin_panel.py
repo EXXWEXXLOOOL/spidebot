@@ -619,3 +619,98 @@ def test_admin_only_runtime_guard_rejects_non_admin_members(tmp_path, monkeypatc
 
     asyncio.run(check())
 
+def test_russian_top_alias_invokes_top_callback(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-russian-top-alias")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_russian_top_alias_test",
+    )
+
+    invocation_channel = SimpleNamespace(id=123456789)
+    published_to = []
+
+    class FakeResponse:
+        async def defer(self, **kwargs):
+            self.deferred = True
+
+    class FakeFollowup:
+        async def send(self, *args, **kwargs):
+            return None
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=123),
+        guild=object(),
+        channel=invocation_channel,
+        response=FakeResponse(),
+        followup=FakeFollowup(),
+    )
+
+    async def allow_top(_interaction, _command_key):
+        return True
+
+    async def fake_publish(channel):
+        published_to.append(channel)
+        return True
+
+    top_globals = namespace["slash_top"].callback.__globals__
+    monkeypatch.setitem(top_globals, "_slash_permission_allowed", allow_top)
+    monkeypatch.setitem(top_globals, "_publish_top_to_channel", fake_publish)
+
+    asyncio.run(namespace["slash_top_ru"].callback(interaction))
+    assert published_to == [invocation_channel]
+
+
+def test_slash_command_usage_log_contains_command_user_guild_and_channel(tmp_path, monkeypatch, caplog):
+    import logging
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-command-usage-log")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_command_usage_log_test",
+    )
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=123456, display_name="Test User"),
+        guild=SimpleNamespace(id=234567, name="Test Server"),
+        channel=SimpleNamespace(id=345678, name="music"),
+        command=SimpleNamespace(name="поиск"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        namespace["_log_slash_command_usage"](
+            interaction,
+            command=interaction.command,
+            outcome="success",
+        )
+
+    assert "SLASH_COMMAND" in caplog.text
+    assert "command=/поиск" in caplog.text
+    assert "user=Test User" in caplog.text
+    assert "user_id=123456" in caplog.text
+    assert "guild=Test Server" in caplog.text
+    assert "guild_id=234567" in caplog.text
+    assert "channel=music" in caplog.text
+    assert "channel_id=345678" in caplog.text
+
