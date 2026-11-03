@@ -170,6 +170,18 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
     assert namespace["bot"].get_command("поиск") is None
     assert namespace["bot"].get_command("search") is None
 
+    tree_commands = {command.name: command for command in namespace["bot"].tree.get_commands()}
+    admin_only_commands = (
+        "checktg", "проверить_тг",
+        "setup_roles", "роли",
+        "commands", "команды",
+    )
+    for command_name in admin_only_commands:
+        command = tree_commands[command_name]
+        assert command.guild_only is True
+        assert command.default_permissions is not None
+        assert command.default_permissions.administrator is True
+
 def test_leaderboard_medals_are_only_used_for_top_three(tmp_path, monkeypatch):
     import runpy
     from pathlib import Path
@@ -397,4 +409,159 @@ def test_role_selector_validation_and_command_help(tmp_path, monkeypatch):
     assert "!commands" not in help_text
     assert "!checktg" not in help_text
     assert "/checktg" not in help_text
+
+def test_legacy_daily_top_default_migrates_to_0322_utc(tmp_path, monkeypatch):
+    import json
+    import runpy
+    from pathlib import Path
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "automation": {
+            "telegram_enabled": True,
+            "telegram_interval_minutes": 10,
+            "daily_top_enabled": True,
+            "daily_top_hour_utc": 0,
+            "daily_top_minute_utc": 22,
+        }
+    }), encoding="utf-8")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-top-schedule-migration")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_schedule_migration_test",
+    )
+
+    assert namespace["app_config"]["config_version"] == 2
+    assert namespace["app_config"]["automation"]["daily_top_hour_utc"] == 3
+    assert namespace["app_config"]["automation"]["daily_top_minute_utc"] == 22
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["automation"]["daily_top_hour_utc"] == 3
+
+
+def test_custom_daily_top_time_is_preserved_during_migration(tmp_path, monkeypatch):
+    import json
+    import runpy
+    from pathlib import Path
+
+    (tmp_path / "config.json").write_text(json.dumps({
+        "automation": {
+            "telegram_enabled": True,
+            "telegram_interval_minutes": 10,
+            "daily_top_enabled": True,
+            "daily_top_hour_utc": 5,
+            "daily_top_minute_utc": 45,
+        }
+    }), encoding="utf-8")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-custom-schedule")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_custom_schedule_test",
+    )
+    assert namespace["app_config"]["automation"]["daily_top_hour_utc"] == 5
+    assert namespace["app_config"]["automation"]["daily_top_minute_utc"] == 45
+
+
+def test_daily_top_uses_only_configured_target_channel(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-daily-top-channel")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_daily_top_channel_test",
+    )
+
+    target_channel = SimpleNamespace(id=1566895795654107217, send=lambda *args, **kwargs: None)
+    requested_ids = []
+    published_to = []
+
+    monkeypatch.setattr(
+        namespace["bot"],
+        "get_channel",
+        lambda channel_id: requested_ids.append(channel_id) or target_channel,
+    )
+
+    async def fake_force_top(channel):
+        published_to.append(channel)
+        return True
+
+    monkeypatch.setitem(namespace, "force_top", fake_force_top)
+    assert asyncio.run(namespace["_publish_daily_top"]()) is True
+    assert requested_ids == [1566895795654107217]
+    assert published_to == [target_channel]
+
+
+def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-invocation-channel")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_invocation_top_test",
+    )
+
+    invocation_channel = SimpleNamespace(id=987654321)
+    published_to = []
+
+    class FakeResponse:
+        async def defer(self, **kwargs):
+            self.deferred = True
+
+    class FakeFollowup:
+        async def send(self, *args, **kwargs):
+            return None
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=123),
+        channel=invocation_channel,
+        response=FakeResponse(),
+        followup=FakeFollowup(),
+    )
+
+    async def allow_top(_interaction, _command_key):
+        return True
+
+    async def fake_publish(channel):
+        published_to.append(channel)
+        return True
+
+    monkeypatch.setitem(namespace, "_slash_permission_allowed", allow_top)
+    monkeypatch.setitem(namespace, "_publish_top_to_channel", fake_publish)
+
+    asyncio.run(namespace["slash_top"].callback(interaction))
+    assert published_to == [invocation_channel]
 
