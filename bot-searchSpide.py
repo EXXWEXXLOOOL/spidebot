@@ -265,11 +265,16 @@ def _build_giveaway_embed(giveaway):
                 result_lines.append(f"{medal} **{prize}** — <@{winner_id}>")
             else:
                 result_lines.append(f"{medal} **{prize}** — победителя нет (не хватило участников)")
-        embed.add_field(
-            name="🏆 Результаты розыгрыша",
-            value="\n".join(result_lines)[:1024],
-            inline=False,
-        )
+        # Discord limits an embed field to 1024 characters; split long result lists.
+        for start in range(0, len(result_lines), 4):
+            group = result_lines[start:start + 4]
+            first_place = start + 1
+            last_place = start + len(group)
+            embed.add_field(
+                name=f"🏆 Результаты • места {first_place}–{last_place}",
+                value="\n".join(group),
+                inline=False,
+            )
         embed.add_field(name="👥 Участников", value=str(len(participants)), inline=True)
         embed.set_footer(text=f"Розыгрыш завершён • Организатор: {giveaway.get('creator_name', 'Администратор')}")
     return embed
