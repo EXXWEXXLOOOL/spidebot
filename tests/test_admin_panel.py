@@ -551,6 +551,7 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
         user=SimpleNamespace(id=123),
         guild=object(),
         channel=invocation_channel,
+        command=SimpleNamespace(name="top"),
         response=FakeResponse(),
         followup=FakeFollowup(),
     )
@@ -563,11 +564,19 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
         return True
 
     slash_top_globals = namespace["slash_top"].callback.__globals__
+    top_log_entries = []
+    monkeypatch.setitem(
+        slash_top_globals,
+        "_log_slash_command_usage",
+        lambda *args, **kwargs: top_log_entries.append(kwargs),
+    )
     monkeypatch.setitem(slash_top_globals, "_slash_permission_allowed", allow_top)
     monkeypatch.setitem(slash_top_globals, "_publish_top_to_channel", fake_publish)
 
     asyncio.run(namespace["slash_top"].callback(interaction))
     assert published_to == [invocation_channel]
+    assert top_log_entries[0]["event_name"] == "TOP_COMMAND_USED"
+    assert top_log_entries[0]["outcome"] == "invoked"
 
 def test_admin_only_runtime_guard_rejects_non_admin_members(tmp_path, monkeypatch):
     import asyncio
@@ -653,6 +662,7 @@ def test_russian_top_alias_invokes_top_callback(tmp_path, monkeypatch):
         user=SimpleNamespace(id=123),
         guild=object(),
         channel=invocation_channel,
+        command=SimpleNamespace(name="топ"),
         response=FakeResponse(),
         followup=FakeFollowup(),
     )
@@ -665,11 +675,19 @@ def test_russian_top_alias_invokes_top_callback(tmp_path, monkeypatch):
         return True
 
     top_globals = namespace["slash_top"].callback.__globals__
+    top_log_entries = []
+    monkeypatch.setitem(
+        top_globals,
+        "_log_slash_command_usage",
+        lambda *args, **kwargs: top_log_entries.append(kwargs),
+    )
     monkeypatch.setitem(top_globals, "_slash_permission_allowed", allow_top)
     monkeypatch.setitem(top_globals, "_publish_top_to_channel", fake_publish)
 
     asyncio.run(namespace["slash_top_ru"].callback(interaction))
     assert published_to == [invocation_channel]
+    assert top_log_entries[0]["event_name"] == "TOP_COMMAND_USED"
+    assert top_log_entries[0]["outcome"] == "invoked"
 
 
 def test_slash_command_usage_log_contains_command_user_guild_and_channel(tmp_path, monkeypatch, caplog):
