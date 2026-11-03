@@ -602,6 +602,7 @@ async def force_top(target_channel):
             )
 
         embed.set_footer(text="SPIDE MUSIC  •  Ежедневный рейтинг")
+        await target_channel.send(embed=embed)
         return True
     except Exception as e:
             err_msg = f"❌ Ошибка получения топа: `{e}`"
@@ -794,6 +795,18 @@ async def on_disconnect():
     notification_settings = app_config.get("notifications", {})
     if notification_settings.get("notify_disconnect", True):
         await send_admin_notification("🔴 SpideBot потерял соединение с Discord Gateway.")
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    logging.error("Ошибка Discord-команды %s: %s", getattr(ctx.command, "qualified_name", "unknown"), error)
+    settings = app_config.get("notifications", {})
+    if settings.get("enabled") and settings.get("notify_errors"):
+        await send_admin_notification(
+            f"Ошибка команды {getattr(ctx.command, 'qualified_name', 'unknown')} на сервере "
+            f"{ctx.guild.id if ctx.guild else 'DM'}: {str(error)[:900]}"
+        )
 
 @bot.command(name="setup_roles")
 @commands.has_permissions(administrator=True)
