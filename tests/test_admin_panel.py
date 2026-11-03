@@ -1,5 +1,6 @@
 import os
 import re
+import sqlite3
 from urllib.parse import urlsplit
 
 from flask import Flask
@@ -101,6 +102,7 @@ def test_new_admin_sections_render(tmp_path):
         "/admin/automation",
         "/admin/notifications",
         "/admin/moderation",
+        "/admin/access",
         "/admin/leaderboard",
     ):
         response = client.get(path)
@@ -191,4 +193,129 @@ def test_leaderboard_medals_are_only_used_for_top_three(tmp_path, monkeypatch):
     assert "**10.**" in remaining_text
     assert "Listener 4" in remaining_text
     assert "мин" in remaining_text
+
+def test_owner_can_create_admin_and_viewer_accounts(tmp_path):
+    import sqlite3
+
+    client, _ = build_client(tmp_path)
+    token = login(client)
+    response = client.post("/admin/access/add", data={
+        "_csrf": token,
+        "username": "new_admin",
+        "password": "a-very-long-password-123",
+        "role": "admin",
+    })
+    assert response.status_code == 302
+
+    connection = sqlite3.connect(tmp_path / "admin_users.sqlite3")
+    try:
+        row = connection.execute(
+            "SELECT username, password_hash, role, active FROM admin_users WHERE username = ?",
+            ("new_admin",),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert row[0] == "new_admin"
+    assert row[1] != "a-very-long-password-123"
+    assert row[2] == "admin"
+    assert row[3] == 1
+
+
+def test_viewer_can_read_but_cannot_change_settings_or_manage_accounts(tmp_path):
+    owner_client, _ = build_client(tmp_path)
+    owner_token = login(owner_client)
+    owner_client.post("/admin/access/add", data={
+        "_csrf": owner_token,
+        "username": "read_only",
+        "password": "another-long-password-456",
+        "role": "viewer",
+    })
+
+    viewer_client, _ = build_client(tmp_path)
+    page = viewer_client.get("/admin/login")
+    csrf = re.search(rb'name="_csrf" value="([^"]+)"', page.data).group(1).decode()
+    login_response = viewer_client.post("/admin/login", data={
+        "_csrf": csrf,
+        "username": "read_only",
+        "password": "another-long-password-456",
+    })
+    assert login_response.status_code == 302
+    assert viewer_client.get("/admin/").status_code == 200
+    assert viewer_client.get("/admin/access").status_code == 403
+
+    view_page = viewer_client.get("/admin/")
+    viewer_csrf = re.search(rb'name="_csrf" value="([^"]+)"', view_page.data).group(1).decode()
+    blocked = viewer_client.post("/admin/telegram/add", data={
+        "_csrf": viewer_csrf,
+        "channel_name": "somechannel",
+    })
+    assert blocked.status_code == 403
+
+
+def test_owner_can_disable_account_and_existing_session_is_revoked(tmp_path):
+    owner_client, _ = build_client(tmp_path)
+    owner_token = login(owner_client)
+    owner_client.post("/admin/access/add", data={
+        "_csrf": owner_token,
+        "username": "temp_admin",
+        "password": "temporary-long-password-789",
+        "role": "admin",
+    })
+
+    temp_client, _ = build_client(tmp_path)
+    login_page = temp_client.get("/admin/login")
+    csrf = re.search(rb'name="_csrf" value="([^"]+)"', login_page.data).group(1).decode()
+    logged_in = temp_client.post("/admin/login", data={
+        "_csrf": csrf,
+        "username": "temp_admin",
+        "password": "temporary-long-password-789",
+    })
+    assert logged_in.status_code == 302
+    assert temp_client.get("/admin/").status_code == 200
+
+    access_page = owner_client.get("/admin/access")
+    owner_token = re.search(rb'name="_csrf" value="([^"]+)"', access_page.data).group(1).decode()
+    connection = sqlite3.connect(tmp_path / "admin_users.sqlite3")
+    try:
+        temp_id = connection.execute(
+            "SELECT id FROM admin_users WHERE username = ?",
+            ("temp_admin",),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    disabled = owner_client.post(f"/admin/access/{temp_id}/toggle", data={"_csrf": owner_token})
+    assert disabled.status_code == 302
+    assert temp_client.get("/admin/").status_code == 302
+
+
+def test_non_owner_cannot_create_admin_accounts(tmp_path):
+    owner_client, _ = build_client(tmp_path)
+    owner_token = login(owner_client)
+    owner_client.post("/admin/access/add", data={
+        "_csrf": owner_token,
+        "username": "ordinary_admin",
+        "password": "ordinary-admin-password-123",
+        "role": "admin",
+    })
+
+    admin_client, _ = build_client(tmp_path)
+    login_page = admin_client.get("/admin/login")
+    csrf = re.search(rb'name="_csrf" value="([^"]+)"', login_page.data).group(1).decode()
+    admin_client.post("/admin/login", data={
+        "_csrf": csrf,
+        "username": "ordinary_admin",
+        "password": "ordinary-admin-password-123",
+    })
+    page = admin_client.get("/admin/")
+    admin_csrf = re.search(rb'name="_csrf" value="([^"]+)"', page.data).group(1).decode()
+    response = admin_client.post("/admin/access/add", data={
+        "_csrf": admin_csrf,
+        "username": "escalated_user",
+        "password": "escalated-user-password-123",
+        "role": "admin",
+    })
+    assert response.status_code == 403
 
