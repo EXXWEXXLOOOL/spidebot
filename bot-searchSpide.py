@@ -1158,7 +1158,7 @@ async def slash_top(interaction: discord.Interaction):
     # Log the invocation immediately, including attempts rejected by permission checks.
     _log_slash_command_usage(
         interaction,
-        command=interaction.command,
+        command=getattr(interaction, "command", None),
         outcome="invoked",
         event_name="TOP_COMMAND_USED",
     )
@@ -1284,7 +1284,7 @@ def _log_slash_command_usage(
     event_name: str = "SLASH_COMMAND",
 ):
     """Write one structured log entry with the command and invocation context."""
-    command_name = getattr(command, "name", None) or getattr(interaction.command, "name", "unknown")
+    command_name = getattr(command, "name", None) or getattr(getattr(interaction, "command", None), "name", "unknown")
     user = interaction.user
     guild = interaction.guild
     channel = interaction.channel
