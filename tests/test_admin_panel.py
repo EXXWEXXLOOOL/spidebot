@@ -51,7 +51,10 @@ def login(client):
         "password": "a-long-test-password",
     })
     assert response.status_code == 302
-    return token
+    authenticated_page = client.get("/admin/")
+    refreshed = re.search(rb'name="_csrf" value="([^"]+)"', authenticated_page.data)
+    assert refreshed is not None
+    return refreshed.group(1).decode()
 
 
 def test_admin_requires_login(tmp_path):
