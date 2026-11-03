@@ -481,6 +481,7 @@ def test_daily_top_uses_only_configured_target_channel(tmp_path, monkeypatch):
     import asyncio
     import runpy
     from pathlib import Path
+    from types import SimpleNamespace
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-daily-top-channel")
@@ -564,4 +565,54 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
 
     asyncio.run(namespace["slash_top"].callback(interaction))
     assert published_to == [invocation_channel]
+
+def test_admin_only_runtime_guard_rejects_non_admin_members(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-admin-runtime-guard")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_admin_runtime_guard_test",
+    )
+
+    class FakeResponse:
+        def __init__(self):
+            self.messages = []
+
+        def is_done(self):
+            return False
+
+        async def send_message(self, message, **kwargs):
+            self.messages.append((message, kwargs))
+
+    async def check():
+        denied_response = FakeResponse()
+        denied = SimpleNamespace(
+            guild=object(),
+            user=SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False)),
+            response=denied_response,
+            followup=SimpleNamespace(send=None),
+        )
+        assert await namespace["_require_administrator"](denied) is False
+        assert denied_response.messages
+        assert denied_response.messages[0][1]["ephemeral"] is True
+
+        allowed = SimpleNamespace(
+            guild=object(),
+            user=SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True)),
+            response=FakeResponse(),
+        )
+        assert await namespace["_require_administrator"](allowed) is True
+
+    asyncio.run(check())
 
