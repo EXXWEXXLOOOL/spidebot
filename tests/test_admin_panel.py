@@ -153,3 +153,40 @@ def test_bot_module_imports_without_callback_name_errors(tmp_path, monkeypatch):
     assert "web_app" in namespace
     assert "admin" in namespace["web_app"].blueprints
 
+def test_leaderboard_medals_are_only_used_for_top_three(tmp_path, monkeypatch):
+    import runpy
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-leaderboard-test")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_leaderboard_test",
+    )
+    rows = [
+        {"user": {"displayName": f"Listener {index}"}, "score": 20000 - index * 1000}
+        for index in range(1, 11)
+    ]
+    embed = namespace["_build_listener_top_embed"]({
+        "rows": rows,
+        "total": 7762,
+        "day": "2026-11-03",
+    })
+
+    assert len(embed.fields) == 4
+    podium_text = " ".join(field.name + " " + field.value for field in embed.fields[:3])
+    remaining_text = embed.fields[3].name + " " + embed.fields[3].value
+
+    assert all(medal in podium_text for medal in ("🥇", "🥈", "🥉"))
+    assert all(medal not in remaining_text for medal in ("🥇", "🥈", "🥉", "🏅", "🎖️"))
+    assert "**04.**" in remaining_text
+    assert "**10.**" in remaining_text
+    assert "Listener 4" in remaining_text
+    assert "мин" in remaining_text
+
