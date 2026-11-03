@@ -331,3 +331,67 @@ def test_non_owner_cannot_create_admin_accounts(tmp_path):
     })
     assert response.status_code == 403
 
+def test_role_selector_validation_and_command_help(tmp_path, monkeypatch):
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-role-selector-test")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_role_selector_test",
+    )
+
+    class FakeRole:
+        def __init__(self, name, position, managed=False, default=False):
+            self.name = name
+            self.position = position
+            self.managed = managed
+            self._default = default
+
+        def is_default(self):
+            return self._default
+
+        def __ge__(self, other):
+            return self.position >= other.position
+
+    def fake_guild(manage_roles=True, bot_position=10):
+        bot_role = FakeRole("SpideBot", bot_position)
+        permissions = SimpleNamespace(manage_roles=manage_roles)
+        bot_member = SimpleNamespace(guild_permissions=permissions, top_role=bot_role)
+        return SimpleNamespace(me=bot_member, get_member=lambda _user_id: bot_member)
+
+    assignable_role = FakeRole("Android", 2)
+    assert namespace["_role_assignment_error"](fake_guild(), assignable_role) is None
+    assert "Управлять ролями" in namespace["_role_assignment_error"](
+        fake_guild(manage_roles=False), assignable_role
+    )
+    assert "выше или на одном уровне" in namespace["_role_assignment_error"](
+        fake_guild(bot_position=2), assignable_role
+    )
+    assert "не найдена" in namespace["_role_assignment_error"](fake_guild(), None)
+
+    view = namespace["RoleSelectView"]()
+    assert view.timeout is None
+    assert {item.custom_id for item in view.children} == {
+        "role_android", "role_web", "role_desktop"
+    }
+
+    author = SimpleNamespace(
+        display_name="Tester",
+        display_avatar=SimpleNamespace(url="https://example.com/avatar.png"),
+    )
+    help_embed = namespace["_build_commands_embed"](author)
+    help_text = "\\n".join(field.value for field in help_embed.fields)
+    assert "/search" in help_text and "/поиск" in help_text
+    assert "/setup_roles" in help_text and "/роли" in help_text
+    assert "Повторное нажатие снимает выбранную роль" in help_text
+    assert "!commands" in help_text
+
