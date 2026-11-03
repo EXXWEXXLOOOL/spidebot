@@ -16,7 +16,10 @@ the login page.
    real .env file):
 
    - `ADMIN_USERNAME`: administrator login.
-   - `ADMIN_PASSWORD`: long, unique password.
+   - `ADMIN_PASSWORD`: long, unique password for the first panel owner.
+   - On first startup, the app creates an owner account from these two
+     variables if the admin database is empty. Later account changes are
+     managed in the panel and do not require editing environment variables.
    - `SECRET_KEY`: optional high-entropy Flask session secret. If omitted,
      the app creates `DATA_DIR/admin_session.key` and attempts to restrict
      its permissions.
@@ -38,6 +41,8 @@ the login page.
 - Logs: search and severity filters over the current process log buffer.
 - Telegram Manager: add/remove public channel names and inspect last post IDs.
 - Security: admin session settings and masked Spide cookie management.
+- Access Management: owner can create administrator and read-only accounts,
+  disable/reactivate them, and remove non-owner accounts.
 - Backup Center: create/download/restore JSON config backups. Spide cookie is
   deliberately excluded from backups and preserved during restore.
 - Automation Center: configurable Telegram polling and daily top schedule (UTC).
@@ -48,6 +53,16 @@ the login page.
 
 - Use HTTPS in production. Do not expose the panel directly over plain HTTP.
 - Do not commit real tokens, cookies, passwords or generated session keys.
+- Admin accounts are stored in `DATA_DIR/admin_users.sqlite3`; keep
+  `DATA_DIR` on persistent storage or accounts will be recreated from the
+  bootstrap environment credentials after a host reset.
+- Passwords are stored as Werkzeug password hashes, not plaintext.
+- Roles: Owner (full access and account management), Admin (panel operations
+  except account management), Viewer (read-only; all POST changes are blocked).
+- Only the initial Owner is bootstrapped from `ADMIN_USERNAME` and
+  `ADMIN_PASSWORD`. Additional users are created from the Access Management page.
+- Do not delete or disable the owner account from the panel; owner protections
+  prevent self-lockout and removal of the main owner.
 - The panel uses Flask signed sessions, HttpOnly/SameSite cookies, CSRF
   tokens on state-changing forms, login checks, and POST-only admin actions.
 - Existing legacy endpoints are blocked by a before-request guard.
