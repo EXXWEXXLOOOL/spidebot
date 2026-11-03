@@ -1036,11 +1036,6 @@ def _build_commands_embed(author):
         inline=False,
     )
     embed.add_field(
-        name="🏆 Топ слушателей",
-        value="**Slash:** \`/top\` или \`/топ\`.\n**Текст:** \`!top\` или \`!топ\`.",
-        inline=False,
-    )
-    embed.add_field(
         name="🔗 Полезные ссылки",
         value="**Slash:** \`/links\` или \`/ссылки\`.\n**Текст:** \`!links\` или \`!ссылки\`.",
         inline=False,
@@ -1192,15 +1187,40 @@ async def slash_search(interaction: discord.Interaction, query: str):
     await _handle_slash_search(interaction, query)
 
 
-@bot.tree.command(name="top", description="Показать топ слушателей Spide")
-async def slash_top(interaction: discord.Interaction):
+async def _handle_slash_top(interaction: discord.Interaction):
+    """Run the same leaderboard flow for both the English and Russian slash names."""
+    command_name = getattr(interaction.command, "name", "top")
+    logging.info(
+        "Slash command /%s invoked by user=%s guild=%s channel=%s",
+        command_name,
+        getattr(interaction.user, "id", "unknown"),
+        getattr(interaction.guild, "id", "DM"),
+        getattr(interaction.channel, "id", "unknown"),
+    )
+
+    if interaction.guild is None or interaction.channel is None:
+        await interaction.response.send_message(
+            "❌ Команда топа доступна только в текстовом канале Discord-сервера.",
+            ephemeral=True,
+        )
+        return
+
     if not await _slash_permission_allowed(interaction, "top"):
         return
+
     await interaction.response.defer(ephemeral=True, thinking=True)
     success = await force_top(interaction.channel)
-    message = "✅ Топ опубликован в этом канале." if success else "❌ Не удалось получить топ. Проверь настройки Spide и логи."
+    message = (
+        "✅ Рейтинг опубликован в этом канале."
+        if success
+        else "❌ Не удалось получить рейтинг. Проверь Spide Cookie и журнал ошибок в админ-панели."
+    )
     await interaction.followup.send(message, ephemeral=True)
 
+
+@bot.tree.command(name="top", description="Показать топ слушателей Spide")
+async def slash_top(interaction: discord.Interaction):
+    await _handle_slash_top(interaction)
 
 @bot.tree.command(name="links", description="Официальные ссылки Spide")
 async def slash_links(interaction: discord.Interaction):
@@ -1257,8 +1277,7 @@ async def slash_search_ru(interaction: discord.Interaction, запрос: str):
 
 @bot.tree.command(name="топ", description="Показать топ слушателей Spide")
 async def slash_top_ru(interaction: discord.Interaction):
-    await slash_top.callback(interaction)
-
+    await _handle_slash_top(interaction)
 
 @bot.tree.command(name="ссылки", description="Официальные ссылки Spide")
 async def slash_links_ru(interaction: discord.Interaction):
