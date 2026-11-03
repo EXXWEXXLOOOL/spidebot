@@ -813,3 +813,69 @@ def test_giveaway_datetime_parsing_and_human_only_participants(tmp_path, monkeyp
     assert view.children[0].custom_id == "spide_giveaway_join:giveaway-1"
     modal = namespace["GiveawayCreateModal"](1234, 2345, 3456, "Admin")
     assert len(modal.children) == 3
+
+
+def test_due_giveaway_draws_and_publishes_a_human_winner(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-giveaway-draw")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_giveaway_draw_test",
+    )
+
+    draw_at = datetime(2026, 11, 10, 20, 0, tzinfo=timezone.utc)
+    namespace["_save_giveaways"]({
+        "draw-test": {
+            "guild_id": 1234,
+            "channel_id": 2345,
+            "message_id": 4567,
+            "creator_name": "Admin",
+            "prize": "Nitro",
+            "conditions": "Be a member",
+            "draw_at": draw_at.isoformat(),
+            "participants": [111, 222],
+            "status": "active",
+        }
+    })
+
+    class FakeMessage:
+        def __init__(self):
+            self.edited = None
+
+        async def edit(self, **kwargs):
+            self.edited = kwargs
+
+    class FakeChannel:
+        def __init__(self):
+            self.message = FakeMessage()
+
+        async def fetch_message(self, message_id):
+            assert message_id == 4567
+            return self.message
+
+    channel = FakeChannel()
+    monkeypatch.setattr(namespace["bot"], "get_channel", lambda channel_id: channel)
+
+    asyncio.run(namespace["_process_due_giveaways"](draw_at + timedelta(minutes=1)))
+
+    saved = namespace["_load_giveaways"]()["draw-test"]
+    assert saved["status"] == "drawn"
+    assert saved["winner_id"] in {111, 222}
+    assert saved["result_published"] is True
+    assert channel.message.edited is not None
+    assert channel.message.edited["view"].children[0].disabled is True
+    result_text = " ".join(
+        field.value for field in channel.message.edited["embed"].fields
+    )
+    assert f"<@{saved['winner_id']}>" in result_text
