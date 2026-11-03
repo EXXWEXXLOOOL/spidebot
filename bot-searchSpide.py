@@ -13,6 +13,7 @@ import threading
 import json
 import collections
 from flask import Flask, render_template, request, redirect, url_for, jsonify
+from dashboard.admin_panel import register_admin_panel
 
 # ==============================
 # LOGGING & MEMORY BUFFER
