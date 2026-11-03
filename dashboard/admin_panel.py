@@ -40,7 +40,7 @@ def _ensure_secret(data_dir: Path) -> str:
 
 
 def register_admin_panel(app, bot, get_config, save_config, get_logs,
-                         actions, get_top_data, data_dir=".", url_prefix="/admin"):
+                         actions, get_top_data, data_dir=".", url_prefix="/admin", moderation_action=None):
     data_path = Path(data_dir).resolve()
     backup_dir = data_path / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -239,6 +239,149 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         return page("backup", backup_files=[{"name": p.name, "size": p.stat().st_size,
                                              "modified": datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")}
                                             for p in files[:30]])
+
+
+    @bp.get("/automation")
+    @login_required
+    def automation():
+        cfg = get_config()
+        settings = cfg.get("automation", {})
+        defaults = {
+            "telegram_enabled": True, "telegram_interval_minutes": 10,
+            "daily_top_enabled": True, "daily_top_hour_utc": 0,
+            "daily_top_minute_utc": 22,
+        }
+        defaults.update(settings)
+        return page("automation", automation_settings=defaults)
+
+    @bp.post("/automation")
+    @login_required
+    def save_automation():
+        require_csrf()
+        try:
+            interval = int(request.form.get("telegram_interval_minutes", "10"))
+            hour = int(request.form.get("daily_top_hour_utc", "0"))
+            minute = int(request.form.get("daily_top_minute_utc", "22"))
+            if not 1 <= interval <= 1440 or not 0 <= hour <= 23 or not 0 <= minute <= 59:
+                raise ValueError("Значения вне допустимого диапазона")
+        except ValueError:
+            flash("Проверьте интервал (1–1440 минут) и время UTC.", "error")
+            return redirect(url_for("admin.automation"))
+        cfg = get_config()
+        cfg["automation"] = {
+            "telegram_enabled": request.form.get("telegram_enabled") == "on",
+            "telegram_interval_minutes": interval,
+            "daily_top_enabled": request.form.get("daily_top_enabled") == "on",
+            "daily_top_hour_utc": hour,
+            "daily_top_minute_utc": minute,
+        }
+        save_config(cfg)
+        audit("обновлены настройки автоматизации")
+        flash("Расписание сохранено. Планировщик применит настройки автоматически.", "success")
+        return redirect(url_for("admin.automation"))
+
+    @bp.get("/notifications")
+    @login_required
+    def notifications():
+        cfg = get_config()
+        settings = cfg.get("notifications", {})
+        channels = []
+        for guild in (list(bot.guilds) if bot.is_ready() else []):
+            for channel in guild.text_channels:
+                if hasattr(channel, "send"):
+                    channels.append({"id": str(channel.id), "name": f"{guild.name} / #{channel.name}"})
+        channels.sort(key=lambda item: item["name"].lower())
+        return page("notifications", notification_settings={
+            "enabled": settings.get("enabled", False),
+            "channel_id": str(settings.get("channel_id", "")),
+            "notify_startup": settings.get("notify_startup", True),
+            "notify_disconnect": settings.get("notify_disconnect", True),
+            "notify_errors": settings.get("notify_errors", False),
+        }, notification_channels=channels)
+
+    @bp.post("/notifications")
+    @login_required
+    def save_notifications():
+        require_csrf()
+        channel_id = request.form.get("channel_id", "").strip()
+        channel = bot.get_channel(int(channel_id)) if channel_id.isdigit() else None
+        if channel_id and (channel is None or not hasattr(channel, "send")):
+            flash("Выберите доступный текстовый канал Discord.", "error")
+            return redirect(url_for("admin.notifications"))
+        cfg = get_config()
+        cfg["notifications"] = {
+            "enabled": request.form.get("enabled") == "on",
+            "channel_id": int(channel_id) if channel_id else 0,
+            "notify_startup": request.form.get("notify_startup") == "on",
+            "notify_disconnect": request.form.get("notify_disconnect") == "on",
+            "notify_errors": request.form.get("notify_errors") == "on",
+        }
+        save_config(cfg)
+        audit("обновлены настройки уведомлений")
+        flash("Настройки уведомлений сохранены.", "success")
+        return redirect(url_for("admin.notifications"))
+
+    @bp.post("/notifications/test")
+    @login_required
+    def test_notification():
+        require_csrf()
+        callback = actions.get("notification_test")
+        if not callback:
+            flash("Отправка тестового уведомления пока недоступна.", "error")
+        else:
+            try:
+                callback()
+                audit("запрошено тестовое уведомление")
+                flash("Тестовое уведомление отправлено в очередь.", "success")
+            except Exception:
+                log.exception("Не удалось отправить тестовое уведомление")
+                flash("Не удалось отправить тестовое уведомление. Проверьте логи.", "error")
+        return redirect(url_for("admin.notifications"))
+
+    @bp.get("/moderation")
+    @login_required
+    def moderation():
+        enabled = os.getenv("MODERATION_ENABLED", "0").lower() in ("1", "true", "yes")
+        return page("moderation", moderation_enabled=enabled)
+
+    @bp.post("/moderation/action")
+    @login_required
+    def moderation_submit():
+        require_csrf()
+        if os.getenv("MODERATION_ENABLED", "0").lower() not in ("1", "true", "yes"):
+            abort(403, description="Discord moderation is disabled by MODERATION_ENABLED")
+        action = request.form.get("action", "").lower()
+        if action not in ("timeout", "kick", "ban", "unban"):
+            abort(400, description="Unsupported moderation action")
+        guild_id = request.form.get("guild_id", "").strip()
+        user_id = request.form.get("user_id", "").strip()
+        reason = request.form.get("reason", "").strip()[:500] or "Действие через SpideBot Admin"
+        try:
+            int(guild_id)
+            int(user_id)
+        except ValueError:
+            flash("Укажите корректные ID сервера и пользователя.", "error")
+            return redirect(url_for("admin.moderation"))
+        duration = 10
+        if action == "timeout":
+            try:
+                duration = int(request.form.get("duration_minutes", "10"))
+                if not 1 <= duration <= 40320:
+                    raise ValueError
+            except ValueError:
+                flash("Timeout должен быть от 1 до 40320 минут (28 дней).", "error")
+                return redirect(url_for("admin.moderation"))
+        if moderation_action is None:
+            flash("Модерация не подключена к Discord-клиенту.", "error")
+            return redirect(url_for("admin.moderation"))
+        try:
+            moderation_action(action, int(guild_id), int(user_id), reason, duration)
+            audit(f"запрошено действие {action} для Discord user {user_id} на сервере {guild_id}")
+            flash("Действие передано Discord-боту. Результат смотри в логах.", "success")
+        except Exception:
+            log.exception("Ошибка постановки модерации в очередь")
+            flash("Не удалось запустить действие. Проверьте логи и состояние бота.", "error")
+        return redirect(url_for("admin.moderation"))
 
     @bp.post("/permissions")
     @login_required
