@@ -9,12 +9,13 @@ from dashboard.admin_panel import register_admin_panel
 
 
 class FakeBot:
-    def __init__(self):
-        self.guilds = []
+    def __init__(self, guilds=None, ready=False):
+        self.guilds = list(guilds or [])
         self.latency = 0.025
+        self._ready = ready
 
     def is_ready(self):
-        return False
+        return self._ready
 
     def get_guild(self, guild_id):
         return None
@@ -23,7 +24,7 @@ class FakeBot:
         return None
 
 
-def build_client(tmp_path):
+def build_client(tmp_path, bot=None):
     os.environ["ADMIN_USERNAME"] = "test-admin"
     os.environ["ADMIN_PASSWORD"] = "a-long-test-password"
     os.environ["COOKIE_SECURE"] = "0"
@@ -31,7 +32,7 @@ def build_client(tmp_path):
     app = Flask(__name__, template_folder="../templates")
     config = {"tg_channels": [], "last_ids": {}, "permissions": {}, "SPIDE_COOKIE": ""}
     register_admin_panel(
-        app, FakeBot(),
+        app, bot or FakeBot(),
         get_config=lambda: config,
         save_config=lambda value: config.update(value),
         get_logs=lambda: [],
@@ -122,8 +123,10 @@ def test_automation_settings_are_saved(tmp_path):
     })
     assert response.status_code == 302
     assert config["automation"]["telegram_interval_minutes"] == 15
-    assert config["automation"]["daily_top_hour_utc"] == 2
-    assert config["automation"]["daily_top_minute_utc"] == 30
+    assert config["automation"]["daily_top_hour"] == 2
+    assert config["automation"]["daily_top_minute"] == 30
+    assert config["automation"]["daily_top_timezone"] == "UTC"
+    assert config["automation"]["daily_top_channel_id"] == 1566895795654107217
 
 
 def test_moderation_is_disabled_by_default(tmp_path):
@@ -1054,3 +1057,125 @@ def test_multi_prize_giveaway_draws_unique_winners_for_each_available_place(tmp_
     for winner in winners:
         assert f"<@{winner}>" in result_text
     assert channel.message.edited["view"].children[0].disabled is True
+
+
+def test_automation_settings_save_local_time_timezone_and_selected_channel(tmp_path):
+    from types import SimpleNamespace
+
+    class FakeChannel:
+        id = 987654321
+        name = "music-top"
+
+        def send(self, *args, **kwargs):
+            return None
+
+        def permissions_for(self, member):
+            return SimpleNamespace(send_messages=True, embed_links=True)
+
+    class FakeGuild:
+        id = 123456
+        name = "Spide Community"
+        me = object()
+
+        def __init__(self):
+            self.text_channels = [FakeChannel()]
+
+    bot = FakeBot(guilds=[FakeGuild()], ready=True)
+    client, config = build_client(tmp_path, bot=bot)
+    token = login(client)
+
+    response = client.post("/admin/automation", data={
+        "_csrf": token,
+        "telegram_enabled": "on",
+        "telegram_interval_minutes": "15",
+        "daily_top_enabled": "on",
+        "daily_top_time": "23:10",
+        "daily_top_timezone": "Europe/Moscow",
+        "daily_top_channel_id": "987654321",
+    })
+    assert response.status_code == 302
+    settings = config["automation"]
+    assert settings["daily_top_hour"] == 23
+    assert settings["daily_top_minute"] == 10
+    assert settings["daily_top_timezone"] == "Europe/Moscow"
+    assert settings["daily_top_channel_id"] == 987654321
+
+    page = client.get("/admin/automation")
+    assert page.status_code == 200
+    assert b"Europe/Moscow" in page.data
+    assert b"music-top" in page.data
+
+
+def test_automation_rejects_a_channel_the_bot_cannot_post_to(tmp_path):
+    from types import SimpleNamespace
+
+    class FakeChannel:
+        id = 987654321
+        name = "read-only"
+
+        def send(self, *args, **kwargs):
+            return None
+
+        def permissions_for(self, member):
+            return SimpleNamespace(send_messages=False, embed_links=False)
+
+    class FakeGuild:
+        id = 123456
+        name = "Spide Community"
+        me = object()
+        text_channels = [FakeChannel()]
+
+    bot = FakeBot(guilds=[FakeGuild()], ready=True)
+    client, config = build_client(tmp_path, bot=bot)
+    token = login(client)
+
+    response = client.post("/admin/automation", data={
+        "_csrf": token,
+        "telegram_enabled": "on",
+        "telegram_interval_minutes": "15",
+        "daily_top_enabled": "on",
+        "daily_top_time": "23:10",
+        "daily_top_timezone": "UTC",
+        "daily_top_channel_id": "987654321",
+    })
+    assert response.status_code == 302
+    assert config.get("automation", {}).get("daily_top_channel_id") is None
+
+
+def test_daily_top_publishes_to_channel_selected_in_automation_settings(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-selected-daily-top")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_selected_daily_top_test",
+    )
+    selected_channel = SimpleNamespace(id=987654321, send=lambda *args, **kwargs: None)
+    requested_ids = []
+    published_to = []
+
+    namespace["app_config"]["automation"]["daily_top_channel_id"] = 987654321
+    monkeypatch.setattr(
+        namespace["bot"],
+        "get_channel",
+        lambda channel_id: requested_ids.append(channel_id) or selected_channel,
+    )
+
+    async def fake_publish(channel):
+        published_to.append(channel)
+        return True
+
+    monkeypatch.setitem(namespace["_publish_daily_top"].__globals__, "_publish_top_to_channel", fake_publish)
+    assert asyncio.run(namespace["_publish_daily_top"]()) is True
+    assert requested_ids == [987654321]
+    assert published_to == [selected_channel]
