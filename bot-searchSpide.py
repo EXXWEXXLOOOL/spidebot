@@ -1886,12 +1886,11 @@ def _build_role_select_embed():
     return discord.Embed(
         title="🎭 Выбор платформы",
         description=(
-            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\n\n"
-            "🤖 **Android**\n🌐 **Web**\n💻 **Desktop**"
+            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\\n\\n"
+            "🤖 **Android**\\n🌐 **Web**\\n💻 **Desktop**\\n🎨 **Своя роль** — создать одну личную роль с выбранным цветом"
         ),
         color=ORANGE,
     )
-
 
 def _build_rules_embed(author):
     embed = discord.Embed(
