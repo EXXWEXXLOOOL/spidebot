@@ -46,6 +46,7 @@ CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
 DAILY_TOP_HISTORY_FILE = os.path.join(DATA_DIR, "daily_top_history.json")
 DAILY_TOP_HISTORY_LIMIT = 100
+DAILY_TOP_HISTORY_LOCK = threading.RLock()
 GIVEAWAY_STORAGE_LOCK = threading.RLock()
 
 DEFAULT_CONFIG = {
@@ -1335,26 +1336,27 @@ def _load_daily_top_history():
 
 def _record_daily_top_publication(channel_id, channel_name, status, source="scheduled", error=None):
     """Append one publication result to persistent history."""
-    history = _load_daily_top_history()
-    entry = {
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "channel_id": int(channel_id or 0),
-        "channel_name": str(channel_name or "Неизвестный канал")[:180],
-        "status": "success" if status == "success" else "failed",
-        "source": "manual" if source == "manual" else "scheduled",
-        "error": str(error or "")[:1000],
-    }
-    history.append(entry)
-    history = history[-DAILY_TOP_HISTORY_LIMIT:]
-    try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        temporary_path = DAILY_TOP_HISTORY_FILE + ".tmp"
-        with open(temporary_path, "w", encoding="utf-8") as file:
-            json.dump(history, file, ensure_ascii=False, indent=2)
-        os.replace(temporary_path, DAILY_TOP_HISTORY_FILE)
-    except OSError:
-        logging.exception("Не удалось сохранить историю публикаций ежедневного топа")
-    return entry
+    with DAILY_TOP_HISTORY_LOCK:
+        history = _load_daily_top_history()
+        entry = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "channel_id": int(channel_id or 0),
+            "channel_name": str(channel_name or "Неизвестный канал")[:180],
+            "status": "success" if status == "success" else "failed",
+            "source": "manual" if source == "manual" else "scheduled",
+            "error": str(error or "")[:1000],
+        }
+        history.append(entry)
+        history = history[-DAILY_TOP_HISTORY_LIMIT:]
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            temporary_path = DAILY_TOP_HISTORY_FILE + ".tmp"
+            with open(temporary_path, "w", encoding="utf-8") as file:
+                json.dump(history, file, ensure_ascii=False, indent=2)
+            os.replace(temporary_path, DAILY_TOP_HISTORY_FILE)
+        except OSError:
+            logging.exception("Не удалось сохранить историю публикаций ежедневного топа")
+        return entry
 
 
 def _get_daily_top_channel_name(channel):
@@ -1419,13 +1421,13 @@ async def _publish_daily_top():
             channel = await bot.fetch_channel(channel_id)
         except Exception as exc:
             logging.exception("Не удалось получить целевой канал ежедневного топа %s", channel_id)
-            _, entry = _record_daily_top_publication(
+            _record_daily_top_publication(
                 channel_id,
                 f"Канал ID {channel_id}",
                 "failed",
                 source="scheduled",
                 error=f"Не удалось получить канал: {str(exc)[:800]}",
-            ), None
+            )
             return False
 
     logging.info("Ежедневный топ будет опубликован в выбранном канале %s", channel_id)
