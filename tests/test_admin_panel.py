@@ -588,9 +588,9 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
     async def allow_top(_interaction, _command_key):
         return True
 
-    async def fake_publish(channel):
-        published_to.append(channel)
-        return True
+    async def fake_publish(channel, source="scheduled"):
+        published_to.append((channel, source))
+        return True, {"status": "success"}
 
     slash_top_globals = namespace["slash_top"].callback.__globals__
     top_log_entries = []
@@ -600,10 +600,10 @@ def test_slash_top_publishes_to_the_invocation_channel(tmp_path, monkeypatch):
         lambda *args, **kwargs: top_log_entries.append(kwargs),
     )
     monkeypatch.setitem(slash_top_globals, "_slash_permission_allowed", allow_top)
-    monkeypatch.setitem(slash_top_globals, "_publish_top_to_channel", fake_publish)
+    monkeypatch.setitem(slash_top_globals, "_publish_top_with_history", fake_publish)
 
     asyncio.run(namespace["slash_top"].callback(interaction))
-    assert published_to == [invocation_channel]
+    assert published_to == [(invocation_channel, "manual")]
     assert fake_response.defer_kwargs == {"ephemeral": False, "thinking": True}
     assert fake_followup.messages[0][1]["ephemeral"] is False
     assert top_log_entries[0]["event_name"] == "TOP_COMMAND_USED"
@@ -701,9 +701,9 @@ def test_russian_top_alias_invokes_top_callback(tmp_path, monkeypatch):
     async def allow_top(_interaction, _command_key):
         return True
 
-    async def fake_publish(channel):
-        published_to.append(channel)
-        return True
+    async def fake_publish(channel, source="scheduled"):
+        published_to.append((channel, source))
+        return True, {"status": "success"}
 
     top_globals = namespace["slash_top"].callback.__globals__
     top_log_entries = []
@@ -713,10 +713,10 @@ def test_russian_top_alias_invokes_top_callback(tmp_path, monkeypatch):
         lambda *args, **kwargs: top_log_entries.append(kwargs),
     )
     monkeypatch.setitem(top_globals, "_slash_permission_allowed", allow_top)
-    monkeypatch.setitem(top_globals, "_publish_top_to_channel", fake_publish)
+    monkeypatch.setitem(top_globals, "_publish_top_with_history", fake_publish)
 
     asyncio.run(namespace["slash_top_ru"].callback(interaction))
-    assert published_to == [invocation_channel]
+    assert published_to == [(invocation_channel, "manual")]
     assert top_log_entries[0]["event_name"] == "TOP_COMMAND_USED"
     assert top_log_entries[0]["outcome"] == "invoked"
 
