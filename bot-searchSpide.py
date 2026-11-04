@@ -121,13 +121,17 @@ def load_config():
             automation = data.setdefault("automation", {})
             if not had_local_top_hour:
                 try:
-                    automation["daily_top_hour"] = int(legacy_top_hour)
+                    automation["daily_top_hour"] = int(
+                        automation.get("daily_top_hour_utc", legacy_top_hour)
+                    )
                 except (TypeError, ValueError):
                     automation["daily_top_hour"] = 3
                 changed = True
             if not had_local_top_minute:
                 try:
-                    automation["daily_top_minute"] = int(legacy_top_minute)
+                    automation["daily_top_minute"] = int(
+                        automation.get("daily_top_minute_utc", legacy_top_minute)
+                    )
                 except (TypeError, ValueError):
                     automation["daily_top_minute"] = 22
                 changed = True
