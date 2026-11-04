@@ -44,6 +44,8 @@ logger.addHandler(console_handler)
 DATA_DIR = os.getenv("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
+DAILY_TOP_HISTORY_FILE = os.path.join(DATA_DIR, "daily_top_history.json")
+DAILY_TOP_HISTORY_LIMIT = 100
 GIVEAWAY_STORAGE_LOCK = threading.RLock()
 
 DEFAULT_CONFIG = {
@@ -931,7 +933,10 @@ def _admin_queue_top():
     channel = bot.get_channel(channel_id)
     if channel is None:
         raise RuntimeError(f"Daily top channel {channel_id} is not available to the bot")
-    asyncio.run_coroutine_threadsafe(force_top(channel), bot.loop)
+    asyncio.run_coroutine_threadsafe(
+        _publish_top_with_history(channel, source="manual"),
+        bot.loop,
+    )
 
 def _admin_queue_cookie_test():
     if not bot.loop or not bot.loop.is_running():
@@ -1314,8 +1319,94 @@ async def _publish_top_to_channel(channel):
     return await force_top(channel)
 
 
+def _load_daily_top_history():
+    """Read the persistent publication history, newest entries last."""
+    try:
+        with open(DAILY_TOP_HISTORY_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError):
+        logging.exception("Не удалось прочитать историю публикаций ежедневного топа")
+    return []
+
+
+def _record_daily_top_publication(channel_id, channel_name, status, source="scheduled", error=None):
+    """Append one publication result to persistent history."""
+    history = _load_daily_top_history()
+    entry = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "channel_id": int(channel_id or 0),
+        "channel_name": str(channel_name or "Неизвестный канал")[:180],
+        "status": "success" if status == "success" else "failed",
+        "source": "manual" if source == "manual" else "scheduled",
+        "error": str(error or "")[:1000],
+    }
+    history.append(entry)
+    history = history[-DAILY_TOP_HISTORY_LIMIT:]
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        temporary_path = DAILY_TOP_HISTORY_FILE + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as file:
+            json.dump(history, file, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, DAILY_TOP_HISTORY_FILE)
+    except OSError:
+        logging.exception("Не удалось сохранить историю публикаций ежедневного топа")
+    return entry
+
+
+def _get_daily_top_channel_name(channel):
+    guild_name = getattr(getattr(channel, "guild", None), "name", None)
+    channel_name = getattr(channel, "name", None)
+    if guild_name and channel_name:
+        return f"{guild_name} / #{channel_name}"
+    if channel_name:
+        return f"#{channel_name}"
+    return f"Канал ID {getattr(channel, 'id', 'unknown')}"
+
+
+async def _publish_top_with_history(channel, source="scheduled", channel_id=None):
+    """Publish top and record success/failure for the admin dashboard."""
+    resolved_channel_id = channel_id or getattr(channel, "id", 0)
+    channel_name = _get_daily_top_channel_name(channel) if channel is not None else f"Канал ID {resolved_channel_id}"
+    status = "failed"
+    error = ""
+
+    if channel is None or not hasattr(channel, "send"):
+        error = "Канал недоступен или не поддерживает отправку сообщений."
+        logging.error("Публикация топа не выполнена: %s", error)
+    else:
+        try:
+            succeeded = await _publish_top_to_channel(channel)
+            if succeeded:
+                status = "success"
+            else:
+                error = "Не удалось получить или отправить топ. Подробности — в логах и канале Discord."
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+            logging.exception("Ошибка публикации топа в %s", resolved_channel_id)
+
+    entry = _record_daily_top_publication(
+        resolved_channel_id,
+        channel_name,
+        status,
+        source=source,
+        error=error,
+    )
+    logging.info(
+        "DAILY_TOP_PUBLICATION | status=%s | source=%s | channel_id=%s | error=%s",
+        status,
+        source,
+        resolved_channel_id,
+        error or "-",
+    )
+    return status == "success", entry
+
+
 async def _publish_daily_top():
-    """Publish the scheduled daily top to the channel selected in the admin panel."""
+    """Publish scheduled top to the selected channel and record its outcome."""
     automation = app_config.get("automation", {})
     try:
         channel_id = int(automation.get("daily_top_channel_id") or TOP_CHANNEL_ID)
@@ -1326,16 +1417,71 @@ async def _publish_daily_top():
     if channel is None:
         try:
             channel = await bot.fetch_channel(channel_id)
-        except Exception:
+        except Exception as exc:
             logging.exception("Не удалось получить целевой канал ежедневного топа %s", channel_id)
+            _, entry = _record_daily_top_publication(
+                channel_id,
+                f"Канал ID {channel_id}",
+                "failed",
+                source="scheduled",
+                error=f"Не удалось получить канал: {str(exc)[:800]}",
+            ), None
             return False
 
-    if channel is None or not hasattr(channel, "send"):
-        logging.error("Целевой канал ежедневного топа %s не поддерживает отправку", channel_id)
-        return False
-
     logging.info("Ежедневный топ будет опубликован в выбранном канале %s", channel_id)
-    return await _publish_top_to_channel(channel)
+    succeeded, _entry = await _publish_top_with_history(
+        channel,
+        source="scheduled",
+        channel_id=channel_id,
+    )
+    return succeeded
+
+
+def _get_next_daily_top_run(now=None, settings=None):
+    """Return the next scheduled local datetime; timezone conversion is DST-aware."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    settings = settings or app_config.get("automation", {})
+    timezone_name = str(settings.get("daily_top_timezone") or "UTC")
+    try:
+        schedule_timezone = ZoneInfo(timezone_name)
+        hour = int(settings.get("daily_top_hour", settings.get("daily_top_hour_utc", 3)))
+        minute = int(settings.get("daily_top_minute", settings.get("daily_top_minute_utc", 22)))
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("Invalid daily top time")
+    except (ZoneInfoNotFoundError, TypeError, ValueError):
+        schedule_timezone = datetime.timezone.utc
+        timezone_name = "UTC"
+        hour, minute = 3, 22
+
+    local_now = now.astimezone(schedule_timezone)
+    next_local = datetime.datetime.combine(
+        local_now.date(),
+        datetime.time(hour=hour, minute=minute),
+        tzinfo=schedule_timezone,
+    )
+    if next_local <= local_now:
+        next_local = datetime.datetime.combine(
+            local_now.date() + datetime.timedelta(days=1),
+            datetime.time(hour=hour, minute=minute),
+            tzinfo=schedule_timezone,
+        )
+    return next_local, timezone_name
+
+
+def _get_daily_top_dashboard_data():
+    settings = app_config.get("automation", {})
+    enabled = bool(settings.get("daily_top_enabled", True))
+    next_local, timezone_name = _get_next_daily_top_run()
+    history = list(reversed(_load_daily_top_history()))[:30]
+    last = history[0] if history else None
+    return {
+        "enabled": enabled,
+        "timezone": timezone_name,
+        "next_run": next_local.strftime("%d.%m.%Y %H:%M"),
+        "next_run_iso": next_local.isoformat(),
+        "last": last,
+        "history": history,
+    }
 
 
 def _daily_top_schedule_due(now, settings, last_run_date=None):
@@ -1424,6 +1570,7 @@ register_admin_panel(
     },
     get_top_data=_admin_get_top_data,
     data_dir=DATA_DIR,
+    get_daily_top_dashboard_data=_get_daily_top_dashboard_data,
     url_prefix="/admin",
     moderation_action=_admin_moderation_action,
 )
