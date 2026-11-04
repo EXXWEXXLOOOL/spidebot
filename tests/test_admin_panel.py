@@ -1372,8 +1372,8 @@ def test_automation_page_displays_daily_top_status_and_history(tmp_path):
     token = login(client)
     response = client.get("/admin/automation")
     assert response.status_code == 200
-    assert b"Статус автопубликации" in response.data
-    assert b"Следующий топ" in response.data
-    assert b"История публикаций" in response.data
-    assert b"Spide / #top" in response.data
-    assert b"Тестовая ошибка отправки" in response.data
+    assert "Статус автопубликации" in response.get_data(as_text=True)
+    assert "Следующий топ" in response.get_data(as_text=True)
+    assert "История публикаций" in response.get_data(as_text=True)
+    assert "Spide / #top" in response.get_data(as_text=True)
+    assert "Тестовая ошибка отправки" in response.get_data(as_text=True)
