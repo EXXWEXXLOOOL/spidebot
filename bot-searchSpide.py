@@ -1876,7 +1876,10 @@ async def slash_top(interaction: discord.Interaction):
 
     # Keep the interaction public so Discord shows who invoked /top in the channel.
     await interaction.response.defer(ephemeral=False, thinking=True)
-    success = await _publish_top_to_channel(interaction.channel)
+    success, _history_entry = await _publish_top_with_history(
+        interaction.channel,
+        source="manual",
+    )
     if success:
         await interaction.followup.send("✅ Топ опубликован в этом канале.", ephemeral=False)
     else:
