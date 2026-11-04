@@ -469,16 +469,33 @@ async def _process_due_giveaways(now=None):
         try:
             channel_id = int(giveaway.get("channel_id", 0))
             channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-            message = await channel.fetch_message(int(giveaway.get("message_id", 0)))
-            await message.edit(
-                embed=_build_giveaway_embed(giveaway),
-                view=GiveawayJoinView(
-                    giveaway_id,
-                    participant_count=len(entrants),
-                    disabled=True,
-                ),
+            result_embed = _build_giveaway_embed(giveaway)
+            result_view = GiveawayJoinView(
+                giveaway_id,
+                participant_count=len(entrants),
+                disabled=True,
             )
+            try:
+                message = await channel.fetch_message(int(giveaway.get("message_id", 0)))
+            except discord.NotFound:
+                # The original giveaway post may have been deleted. Publish the
+                # result as a new message instead of retrying the missing message
+                # forever on every scheduler tick.
+                logging.warning(
+                    "Исходное сообщение розыгрыша %s удалено; публикую итоги отдельным сообщением",
+                    giveaway_id,
+                )
+                result_message = await channel.send(
+                    content="⚠️ Исходное сообщение розыгрыша было удалено. Публикую итоги отдельно.",
+                    embed=result_embed,
+                    view=result_view,
+                )
+                giveaway["result_message_id"] = int(result_message.id)
+            else:
+                await message.edit(embed=result_embed, view=result_view)
+                giveaway["result_message_id"] = int(message.id)
             giveaway["result_published"] = True
+            giveaway.pop("result_publish_error", None)
             _save_giveaways(giveaways)
             logging.info(
                 "Розыгрыш %s завершён на сервере %s; участников: %s; победитель: %s",
