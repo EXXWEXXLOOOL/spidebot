@@ -45,7 +45,8 @@ def _ensure_secret(data_dir: Path) -> str:
 
 
 def register_admin_panel(app, bot, get_config, save_config, get_logs,
-                         actions, get_top_data, data_dir=".", url_prefix="/admin", moderation_action=None):
+                         actions, get_top_data, data_dir=".", url_prefix="/admin", moderation_action=None,
+                         get_daily_top_dashboard_data=None):
     data_path = Path(data_dir).resolve()
     backup_dir = data_path / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -548,11 +549,23 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
                 "id": selected_channel_id,
                 "name": f"Сохранённый канал • ID {selected_channel_id} (бот не подключён)",
             })
+        dashboard_data = (
+            get_daily_top_dashboard_data()
+            if callable(get_daily_top_dashboard_data)
+            else {
+                "enabled": bool(defaults.get("daily_top_enabled", True)),
+                "timezone": defaults.get("daily_top_timezone", "UTC"),
+                "next_run": "—",
+                "last": None,
+                "history": [],
+            }
+        )
         return page(
             "automation",
             automation_settings=defaults,
             daily_top_channels=channels,
             daily_top_timezone_options=daily_top_timezone_options,
+            daily_top_dashboard_data=dashboard_data,
         )
 
     @bp.post("/automation")

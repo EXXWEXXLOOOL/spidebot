@@ -24,7 +24,7 @@ class FakeBot:
         return None
 
 
-def build_client(tmp_path, bot=None):
+def build_client(tmp_path, bot=None, get_daily_top_dashboard_data=None):
     os.environ["ADMIN_USERNAME"] = "test-admin"
     os.environ["ADMIN_PASSWORD"] = "a-long-test-password"
     os.environ["COOKIE_SECURE"] = "0"
@@ -39,6 +39,7 @@ def build_client(tmp_path, bot=None):
         actions={},
         get_top_data=lambda: {"rows": [], "total": 0, "day": "today"},
         data_dir=str(tmp_path),
+        get_daily_top_dashboard_data=get_daily_top_dashboard_data,
     )
     app.config["TESTING"] = True
     return app.test_client(), config
@@ -1237,3 +1238,142 @@ def test_daily_top_schedule_uses_selected_timezone_and_runs_once_per_local_day(t
     )
     assert berlin_due is True
     assert berlin_timezone == "Europe/Berlin"
+
+
+def test_daily_top_history_persists_success_and_failure_results(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-daily-top-history")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_daily_top_history_test",
+    )
+
+    channel = SimpleNamespace(
+        id=987654321,
+        name="music-top",
+        guild=SimpleNamespace(name="Spide Community"),
+        send=lambda *args, **kwargs: None,
+    )
+    publish_globals = namespace["_publish_top_with_history"].__globals__
+    async def successful_publish(target):
+        assert target is channel
+        return True
+
+    monkeypatch.setitem(publish_globals, "_publish_top_to_channel", successful_publish)
+    success, success_entry = asyncio.run(
+        namespace["_publish_top_with_history"](channel, source="scheduled")
+    )
+    assert success is True
+    assert success_entry["status"] == "success"
+    assert success_entry["source"] == "scheduled"
+    assert success_entry["channel_id"] == 987654321
+    assert success_entry["channel_name"] == "Spide Community / #music-top"
+
+    async def failed_publish(target):
+        return False
+
+    monkeypatch.setitem(publish_globals, "_publish_top_to_channel", failed_publish)
+    failed, failed_entry = asyncio.run(
+        namespace["_publish_top_with_history"](channel, source="manual")
+    )
+    assert failed is False
+    assert failed_entry["status"] == "failed"
+    assert failed_entry["source"] == "manual"
+    assert failed_entry["error"]
+
+    saved_history = namespace["_load_daily_top_history"]()
+    assert [item["status"] for item in saved_history] == ["success", "failed"]
+    assert [item["source"] for item in saved_history] == ["scheduled", "manual"]
+
+
+def test_daily_top_dashboard_data_calculates_next_run_and_latest_history(tmp_path, monkeypatch):
+    import runpy
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-daily-top-dashboard")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_daily_top_dashboard_test",
+    )
+    settings = {
+        "daily_top_enabled": True,
+        "daily_top_hour": 23,
+        "daily_top_minute": 10,
+        "daily_top_timezone": "Europe/Moscow",
+    }
+    next_run, timezone_name = namespace["_get_next_daily_top_run"](
+        datetime(2026, 11, 4, 20, 0, tzinfo=timezone.utc),
+        settings,
+    )
+    assert timezone_name == "Europe/Moscow"
+    assert next_run.strftime("%Y-%m-%d %H:%M") == "2026-11-04 23:10"
+
+    namespace["app_config"]["automation"].update(settings)
+    namespace["_record_daily_top_publication"](
+        123,
+        "Server / #top",
+        "success",
+        source="scheduled",
+    )
+    dashboard_data = namespace["_get_daily_top_dashboard_data"]()
+    assert dashboard_data["enabled"] is True
+    assert dashboard_data["timezone"] == "Europe/Moscow"
+    assert dashboard_data["last"]["channel_name"] == "Server / #top"
+    assert dashboard_data["last"]["status"] == "success"
+    assert len(dashboard_data["history"]) == 1
+
+
+def test_automation_page_displays_daily_top_status_and_history(tmp_path):
+    dashboard_data = {
+        "enabled": True,
+        "timezone": "Europe/Moscow",
+        "next_run": "04.11.2026 23:10",
+        "next_run_iso": "2026-11-04T23:10:00+03:00",
+        "last": {
+            "timestamp": "2026-11-04T20:10:00+00:00",
+            "channel_id": 123456,
+            "channel_name": "Spide / #top",
+            "status": "failed",
+            "source": "scheduled",
+            "error": "Тестовая ошибка отправки",
+        },
+        "history": [{
+            "timestamp": "2026-11-04T20:10:00+00:00",
+            "channel_id": 123456,
+            "channel_name": "Spide / #top",
+            "status": "failed",
+            "source": "scheduled",
+            "error": "Тестовая ошибка отправки",
+        }],
+    }
+    client, _ = build_client(
+        tmp_path,
+        get_daily_top_dashboard_data=lambda: dashboard_data,
+    )
+    token = login(client)
+    response = client.get("/admin/automation")
+    assert response.status_code == 200
+    assert "Статус автопубликации" in response.get_data(as_text=True)
+    assert "Следующий топ" in response.get_data(as_text=True)
+    assert "История публикаций" in response.get_data(as_text=True)
+    assert "Spide / #top" in response.get_data(as_text=True)
+    assert "Тестовая ошибка отправки" in response.get_data(as_text=True)
