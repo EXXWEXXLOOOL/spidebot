@@ -405,7 +405,7 @@ def test_role_selector_validation_and_command_help(tmp_path, monkeypatch):
     view = namespace["RoleSelectView"]()
     assert view.timeout is None
     assert {item.custom_id for item in view.children} == {
-        "role_android", "role_web", "role_desktop"
+        "role_android", "role_web", "role_desktop", "role_custom"
     }
 
     author = SimpleNamespace(
