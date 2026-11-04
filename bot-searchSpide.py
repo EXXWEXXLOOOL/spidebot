@@ -45,6 +45,9 @@ DATA_DIR = os.getenv("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
 DAILY_TOP_HISTORY_FILE = os.path.join(DATA_DIR, "daily_top_history.json")
+CUSTOM_ROLE_FILE = os.path.join(DATA_DIR, "custom_roles.json")
+CUSTOM_ROLE_STORAGE_LOCK = threading.RLock()
+CUSTOM_ROLE_CREATION_LOCK = asyncio.Lock()
 DAILY_TOP_HISTORY_LIMIT = 100
 DAILY_TOP_HISTORY_LOCK = threading.RLock()
 GIVEAWAY_STORAGE_LOCK = threading.RLock()
@@ -752,9 +755,203 @@ class RoleSelectView(discord.ui.View):
     async def web_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_role(interaction, "Web")
 
+    @discord.ui.button(label="Своя роль", style=discord.ButtonStyle.secondary, emoji="🎨", custom_id="role_custom")
+    async def custom_role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ Эта кнопка работает только на сервере.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Выбери цвет будущей роли. Затем укажи её название.",
+            view=CustomRoleColorView(),
+            ephemeral=True,
+        )
+
     @discord.ui.button(label="Desktop", style=discord.ButtonStyle.secondary, emoji="💻", custom_id="role_desktop")
     async def desktop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_role(interaction, "Desktop")
+
+
+CUSTOM_ROLE_COLORS = {
+    "Красный": 0xE74C3C,
+    "Оранжевый": 0xE67E22,
+    "Жёлтый": 0xF1C40F,
+    "Зелёный": 0x2ECC71,
+    "Бирюзовый": 0x1ABC9C,
+    "Голубой": 0x3498DB,
+    "Синий": 0x206694,
+    "Фиолетовый": 0x9B59B6,
+    "Розовый": 0xE91E63,
+    "Белый": 0xF2F3F5,
+    "Чёрный": 0x23272A,
+    "Без цвета": 0x000000,
+}
+
+
+def _load_custom_roles():
+    with CUSTOM_ROLE_STORAGE_LOCK:
+        if not os.path.exists(CUSTOM_ROLE_FILE):
+            return {}
+        try:
+            with open(CUSTOM_ROLE_FILE, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            logging.exception("Не удалось прочитать реестр пользовательских ролей")
+            return {}
+
+
+def _save_custom_roles(data):
+    with CUSTOM_ROLE_STORAGE_LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        temporary_path = CUSTOM_ROLE_FILE + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, CUSTOM_ROLE_FILE)
+
+
+class CustomRoleNameModal(discord.ui.Modal, title="Создать свою роль"):
+    role_name = discord.ui.TextInput(
+        label="Название роли",
+        placeholder="Например, Spide Fan",
+        min_length=2,
+        max_length=30,
+        required=True,
+    )
+
+    def __init__(self, color_name):
+        super().__init__(timeout=180)
+        self.color_name = color_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = interaction.user
+        if guild is None or not isinstance(member, discord.Member):
+            await interaction.response.send_message("❌ Создание роли доступно только на сервере.", ephemeral=True)
+            return
+
+        name = str(self.role_name.value).strip()
+        if len(name) < 2 or name in {"@everyone", "@here"}:
+            await interaction.response.send_message("❌ Укажи корректное название роли.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        key = f"{guild.id}:{member.id}"
+        async with CUSTOM_ROLE_CREATION_LOCK:
+            registry = _load_custom_roles()
+            existing_id = registry.get(key)
+            if existing_id:
+                existing_role = guild.get_role(int(existing_id))
+                if existing_role is not None:
+                    await interaction.followup.send(
+                        f"❌ У тебя уже есть кастомная роль: **{existing_role.name}**. "
+                        "Один участник может иметь только одну такую роль.",
+                        ephemeral=True,
+                    )
+                    return
+                registry.pop(key, None)
+                _save_custom_roles(registry)
+
+            participant_role = discord.utils.get(guild.roles, name="🕷 Участник")
+            android_role = discord.utils.get(guild.roles, name="Android")
+            if participant_role is None or android_role is None:
+                await interaction.followup.send(
+                    "❌ Не найдены роли **🕷 Участник** или **Android**. "
+                    "Администратору нужно проверить их названия.",
+                    ephemeral=True,
+                )
+                return
+            if participant_role.position <= android_role.position:
+                await interaction.followup.send(
+                    "❌ Не получается определить место для кастомной роли: "
+                    "роль **🕷 Участник** должна находиться выше **Android**.",
+                    ephemeral=True,
+                )
+                return
+
+            bot_member = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+            if bot_member is None or not bot_member.guild_permissions.manage_roles:
+                await interaction.followup.send(
+                    "❌ У SpideBot нет права **Управлять ролями**.",
+                    ephemeral=True,
+                )
+                return
+            if bot_member.top_role.position <= participant_role.position:
+                await interaction.followup.send(
+                    "❌ Подними высшую роль SpideBot выше роли **🕷 Участник**, "
+                    "чтобы бот мог создать и разместить кастомную роль.",
+                    ephemeral=True,
+                )
+                return
+
+            created_role = None
+            try:
+                created_role = await guild.create_role(
+                    name=name,
+                    permissions=discord.Permissions.none(),
+                    colour=discord.Colour(CUSTOM_ROLE_COLORS[self.color_name]),
+                    hoist=False,
+                    mentionable=False,
+                    reason=f"Кастомная роль участника {member} ({member.id})",
+                )
+                await created_role.edit(
+                    position=android_role.position + 1,
+                    reason="Размещение кастомной роли между 🕷 Участник и Android",
+                )
+                await member.add_roles(created_role, reason="Выдача личной кастомной роли SpideBot")
+                registry[key] = str(created_role.id)
+                _save_custom_roles(registry)
+            except discord.Forbidden:
+                if created_role is not None:
+                    try:
+                        await created_role.delete(reason="Не удалось выдать личную кастомную роль")
+                    except discord.HTTPException:
+                        logging.exception("Не удалось удалить невыданную кастомную роль %s", created_role.id)
+                logging.exception("Discord запретил создание/выдачу кастомной роли участнику %s", member.id)
+                await interaction.followup.send(
+                    "❌ Discord запретил создать или выдать роль. Проверь право **Управлять ролями** "
+                    "и положение роли SpideBot.",
+                    ephemeral=True,
+                )
+                return
+            except discord.HTTPException:
+                if created_role is not None:
+                    try:
+                        await created_role.delete(reason="Ошибка при выдаче личной кастомной роли")
+                    except discord.HTTPException:
+                        logging.exception("Не удалось удалить невыданную кастомную роль %s", created_role.id)
+                logging.exception("Ошибка Discord API при создании кастомной роли для %s", member.id)
+                await interaction.followup.send(
+                    "❌ Не удалось создать роль из-за ошибки Discord. Попробуй ещё раз позже.",
+                    ephemeral=True,
+                )
+                return
+
+        await interaction.followup.send(
+            f"✅ Твоя роль **{created_role.name}** создана и выдана! Цвет: **{self.color_name}**.",
+            ephemeral=True,
+        )
+
+
+class CustomRoleColorView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        options = [
+            discord.SelectOption(label=name, value=name, description=f"Цвет {name.lower()}")
+            for name in CUSTOM_ROLE_COLORS
+        ]
+        self.color_select = discord.ui.Select(
+            placeholder="Выбери цвет своей роли",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.color_select.callback = self.select_color
+        self.add_item(self.color_select)
+
+    async def select_color(self, interaction: discord.Interaction):
+        color_name = self.color_select.values[0]
+        await interaction.response.send_modal(CustomRoleNameModal(color_name))
+
 
 @bot.event
 async def on_member_join(member):
@@ -1689,12 +1886,11 @@ def _build_role_select_embed():
     return discord.Embed(
         title="🎭 Выбор платформы",
         description=(
-            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\n\n"
-            "🤖 **Android**\n🌐 **Web**\n💻 **Desktop**"
+            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\\n\\n"
+            "🤖 **Android**\\n🌐 **Web**\\n💻 **Desktop**\\n🎨 **Своя роль** — создать одну личную роль с выбранным цветом"
         ),
         color=ORANGE,
     )
-
 
 def _build_rules_embed(author):
     embed = discord.Embed(
