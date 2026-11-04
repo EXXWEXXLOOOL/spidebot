@@ -1338,6 +1338,31 @@ async def _publish_daily_top():
     return await _publish_top_to_channel(channel)
 
 
+def _daily_top_schedule_due(now, settings, last_run_date=None):
+    """Evaluate the daily top's local wall-clock schedule with DST-aware timezone rules."""
+    timezone_name = str(settings.get("daily_top_timezone") or "UTC")
+    try:
+        schedule_timezone = ZoneInfo(timezone_name)
+        hour = int(settings.get("daily_top_hour", settings.get("daily_top_hour_utc", 3)))
+        minute = int(settings.get("daily_top_minute", settings.get("daily_top_minute_utc", 22)))
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("Invalid daily top time")
+    except (ZoneInfoNotFoundError, TypeError, ValueError):
+        logging.exception("Некорректный часовой пояс или время ежедневного топа; используется UTC")
+        schedule_timezone = datetime.timezone.utc
+        timezone_name = "UTC"
+        hour, minute = 3, 22
+
+    local_now = now.astimezone(schedule_timezone)
+    today = local_now.date().isoformat()
+    due = (
+        local_now.hour == hour
+        and local_now.minute == minute
+        and last_run_date != today
+    )
+    return due, today, timezone_name
+
+
 @tasks.loop(minutes=1)
 async def automation_scheduler():
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -1365,29 +1390,17 @@ async def automation_scheduler():
                 logging.exception("Ошибка автоматической проверки Telegram")
 
     if settings.get("daily_top_enabled", True):
-        timezone_name = str(settings.get("daily_top_timezone") or "UTC")
-        try:
-            top_timezone = ZoneInfo(timezone_name)
-            hour = int(settings.get("daily_top_hour", settings.get("daily_top_hour_utc", 3)))
-            minute = int(settings.get("daily_top_minute", settings.get("daily_top_minute_utc", 22)))
-            if not 0 <= hour <= 23 or not 0 <= minute <= 59:
-                raise ValueError("Invalid daily top time")
-        except (ZoneInfoNotFoundError, TypeError, ValueError):
-            logging.exception("Некорректный часовой пояс или время ежедневного топа; используется UTC")
-            top_timezone = datetime.timezone.utc
-            timezone_name = "UTC"
-            hour, minute = 3, 22
-
-        local_now = now.astimezone(top_timezone)
-        today = local_now.date().isoformat()
-        if local_now.hour == hour and local_now.minute == minute and state.get("last_daily_top_date") != today:
+        due, today, timezone_name = _daily_top_schedule_due(
+            now,
+            settings,
+            state.get("last_daily_top_date"),
+        )
+        if due:
             state["last_daily_top_date"] = today
             save_config(app_config)
             logging.info(
-                "Наступило время ежедневного топа: %s %02d:%02d (%s)",
+                "Наступило время ежедневного топа: %s (%s)",
                 today,
-                hour,
-                minute,
                 timezone_name,
             )
             await _publish_daily_top()
