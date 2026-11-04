@@ -57,7 +57,11 @@ DEFAULT_CONFIG = {
         "telegram_interval_minutes": 10,
         "daily_top_enabled": True,
         "daily_top_hour_utc": 3,
-        "daily_top_minute_utc": 22
+        "daily_top_minute_utc": 22,
+        "daily_top_hour": 3,
+        "daily_top_minute": 22,
+        "daily_top_timezone": "UTC",
+        "daily_top_channel_id": 1566895795654107217
     },
     "automation_state": {},
     "notifications": {
@@ -74,6 +78,16 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
+            existing_automation = data.get("automation", {})
+            if not isinstance(existing_automation, dict):
+                existing_automation = {}
+            had_local_top_hour = "daily_top_hour" in existing_automation
+            had_local_top_minute = "daily_top_minute" in existing_automation
+            had_top_timezone = "daily_top_timezone" in existing_automation
+            had_top_channel = "daily_top_channel_id" in existing_automation
+            legacy_top_hour = existing_automation.get("daily_top_hour_utc", 3)
+            legacy_top_minute = existing_automation.get("daily_top_minute_utc", 22)
 
             changed = False
             try:
@@ -102,6 +116,30 @@ def load_config():
                     automation["daily_top_hour_utc"] = 3
                     changed = True
                 data["config_version"] = 2
+                changed = True
+
+            automation = data.setdefault("automation", {})
+            if not had_local_top_hour:
+                try:
+                    automation["daily_top_hour"] = int(
+                        automation.get("daily_top_hour_utc", legacy_top_hour)
+                    )
+                except (TypeError, ValueError):
+                    automation["daily_top_hour"] = 3
+                changed = True
+            if not had_local_top_minute:
+                try:
+                    automation["daily_top_minute"] = int(
+                        automation.get("daily_top_minute_utc", legacy_top_minute)
+                    )
+                except (TypeError, ValueError):
+                    automation["daily_top_minute"] = 22
+                changed = True
+            if not had_top_timezone:
+                automation["daily_top_timezone"] = "UTC"
+                changed = True
+            if not had_top_channel:
+                automation["daily_top_channel_id"] = 1566895795654107217
                 changed = True
 
             if changed:
@@ -888,9 +926,11 @@ def _admin_queue_checktg():
 def _admin_queue_top():
     if not bot.loop or not bot.loop.is_running():
         raise RuntimeError("Discord event loop is not running")
-    channel = bot.get_channel(TOP_CHANNEL_ID)
+    automation = app_config.get("automation", {})
+    channel_id = int(automation.get("daily_top_channel_id") or TOP_CHANNEL_ID)
+    channel = bot.get_channel(channel_id)
     if channel is None:
-        raise RuntimeError("TOP_CHANNEL_ID is not available to the bot")
+        raise RuntimeError(f"Daily top channel {channel_id} is not available to the bot")
     asyncio.run_coroutine_threadsafe(force_top(channel), bot.loop)
 
 def _admin_queue_cookie_test():
@@ -1275,21 +1315,52 @@ async def _publish_top_to_channel(channel):
 
 
 async def _publish_daily_top():
-    """Publish the scheduled daily top only to TOP_CHANNEL_ID."""
-    channel = bot.get_channel(TOP_CHANNEL_ID)
+    """Publish the scheduled daily top to the channel selected in the admin panel."""
+    automation = app_config.get("automation", {})
+    try:
+        channel_id = int(automation.get("daily_top_channel_id") or TOP_CHANNEL_ID)
+    except (TypeError, ValueError):
+        channel_id = TOP_CHANNEL_ID
+
+    channel = bot.get_channel(channel_id)
     if channel is None:
         try:
-            channel = await bot.fetch_channel(TOP_CHANNEL_ID)
+            channel = await bot.fetch_channel(channel_id)
         except Exception:
-            logging.exception("Не удалось получить целевой канал ежедневного топа %s", TOP_CHANNEL_ID)
+            logging.exception("Не удалось получить целевой канал ежедневного топа %s", channel_id)
             return False
 
     if channel is None or not hasattr(channel, "send"):
-        logging.error("Целевой канал ежедневного топа %s не поддерживает отправку", TOP_CHANNEL_ID)
+        logging.error("Целевой канал ежедневного топа %s не поддерживает отправку", channel_id)
         return False
 
-    logging.info("Ежедневный топ будет опубликован только в канале %s", TOP_CHANNEL_ID)
+    logging.info("Ежедневный топ будет опубликован в выбранном канале %s", channel_id)
     return await _publish_top_to_channel(channel)
+
+
+def _daily_top_schedule_due(now, settings, last_run_date=None):
+    """Evaluate the daily top's local wall-clock schedule with DST-aware timezone rules."""
+    timezone_name = str(settings.get("daily_top_timezone") or "UTC")
+    try:
+        schedule_timezone = ZoneInfo(timezone_name)
+        hour = int(settings.get("daily_top_hour", settings.get("daily_top_hour_utc", 3)))
+        minute = int(settings.get("daily_top_minute", settings.get("daily_top_minute_utc", 22)))
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("Invalid daily top time")
+    except (ZoneInfoNotFoundError, TypeError, ValueError):
+        logging.exception("Некорректный часовой пояс или время ежедневного топа; используется UTC")
+        schedule_timezone = datetime.timezone.utc
+        timezone_name = "UTC"
+        hour, minute = 3, 22
+
+    local_now = now.astimezone(schedule_timezone)
+    today = local_now.date().isoformat()
+    due = (
+        local_now.hour == hour
+        and local_now.minute == minute
+        and last_run_date != today
+    )
+    return due, today, timezone_name
 
 
 @tasks.loop(minutes=1)
@@ -1319,15 +1390,19 @@ async def automation_scheduler():
                 logging.exception("Ошибка автоматической проверки Telegram")
 
     if settings.get("daily_top_enabled", True):
-        try:
-            hour = int(settings.get("daily_top_hour_utc", 3))
-            minute = int(settings.get("daily_top_minute_utc", 22))
-        except (TypeError, ValueError):
-            hour, minute = 3, 22
-        today = now.date().isoformat()
-        if now.hour == hour and now.minute == minute and state.get("last_daily_top_date") != today:
+        due, today, timezone_name = _daily_top_schedule_due(
+            now,
+            settings,
+            state.get("last_daily_top_date"),
+        )
+        if due:
             state["last_daily_top_date"] = today
             save_config(app_config)
+            logging.info(
+                "Наступило время ежедневного топа: %s (%s)",
+                today,
+                timezone_name,
+            )
             await _publish_daily_top()
 
     try:

@@ -9,12 +9,13 @@ from dashboard.admin_panel import register_admin_panel
 
 
 class FakeBot:
-    def __init__(self):
-        self.guilds = []
+    def __init__(self, guilds=None, ready=False):
+        self.guilds = list(guilds or [])
         self.latency = 0.025
+        self._ready = ready
 
     def is_ready(self):
-        return False
+        return self._ready
 
     def get_guild(self, guild_id):
         return None
@@ -23,7 +24,7 @@ class FakeBot:
         return None
 
 
-def build_client(tmp_path):
+def build_client(tmp_path, bot=None):
     os.environ["ADMIN_USERNAME"] = "test-admin"
     os.environ["ADMIN_PASSWORD"] = "a-long-test-password"
     os.environ["COOKIE_SECURE"] = "0"
@@ -31,7 +32,7 @@ def build_client(tmp_path):
     app = Flask(__name__, template_folder="../templates")
     config = {"tg_channels": [], "last_ids": {}, "permissions": {}, "SPIDE_COOKIE": ""}
     register_admin_panel(
-        app, FakeBot(),
+        app, bot or FakeBot(),
         get_config=lambda: config,
         save_config=lambda value: config.update(value),
         get_logs=lambda: [],
@@ -122,8 +123,10 @@ def test_automation_settings_are_saved(tmp_path):
     })
     assert response.status_code == 302
     assert config["automation"]["telegram_interval_minutes"] == 15
-    assert config["automation"]["daily_top_hour_utc"] == 2
-    assert config["automation"]["daily_top_minute_utc"] == 30
+    assert config["automation"]["daily_top_hour"] == 2
+    assert config["automation"]["daily_top_minute"] == 30
+    assert config["automation"]["daily_top_timezone"] == "UTC"
+    assert config["automation"]["daily_top_channel_id"] == 1566895795654107217
 
 
 def test_moderation_is_disabled_by_default(tmp_path):
@@ -449,8 +452,13 @@ def test_legacy_daily_top_default_migrates_to_0322_utc(tmp_path, monkeypatch):
     assert namespace["app_config"]["config_version"] == 2
     assert namespace["app_config"]["automation"]["daily_top_hour_utc"] == 3
     assert namespace["app_config"]["automation"]["daily_top_minute_utc"] == 22
+    assert namespace["app_config"]["automation"]["daily_top_hour"] == 3
+    assert namespace["app_config"]["automation"]["daily_top_minute"] == 22
+    assert namespace["app_config"]["automation"]["daily_top_timezone"] == "UTC"
+    assert namespace["app_config"]["automation"]["daily_top_channel_id"] == 1566895795654107217
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert persisted["automation"]["daily_top_hour_utc"] == 3
+    assert persisted["automation"]["daily_top_hour"] == 3
 
 
 def test_custom_daily_top_time_is_preserved_during_migration(tmp_path, monkeypatch):
@@ -482,6 +490,9 @@ def test_custom_daily_top_time_is_preserved_during_migration(tmp_path, monkeypat
     )
     assert namespace["app_config"]["automation"]["daily_top_hour_utc"] == 5
     assert namespace["app_config"]["automation"]["daily_top_minute_utc"] == 45
+    assert namespace["app_config"]["automation"]["daily_top_hour"] == 5
+    assert namespace["app_config"]["automation"]["daily_top_minute"] == 45
+    assert namespace["app_config"]["automation"]["daily_top_timezone"] == "UTC"
 
 
 def test_daily_top_uses_only_configured_target_channel(tmp_path, monkeypatch):
@@ -1054,3 +1065,175 @@ def test_multi_prize_giveaway_draws_unique_winners_for_each_available_place(tmp_
     for winner in winners:
         assert f"<@{winner}>" in result_text
     assert channel.message.edited["view"].children[0].disabled is True
+
+
+def test_automation_settings_save_local_time_timezone_and_selected_channel(tmp_path):
+    from types import SimpleNamespace
+
+    class FakeChannel:
+        id = 987654321
+        name = "music-top"
+
+        def send(self, *args, **kwargs):
+            return None
+
+        def permissions_for(self, member):
+            return SimpleNamespace(send_messages=True, embed_links=True)
+
+    class FakeGuild:
+        id = 123456
+        name = "Spide Community"
+        me = object()
+        members = []
+
+        def __init__(self):
+            self.text_channels = [FakeChannel()]
+
+    bot = FakeBot(guilds=[FakeGuild()], ready=True)
+    client, config = build_client(tmp_path, bot=bot)
+    token = login(client)
+
+    response = client.post("/admin/automation", data={
+        "_csrf": token,
+        "telegram_enabled": "on",
+        "telegram_interval_minutes": "15",
+        "daily_top_enabled": "on",
+        "daily_top_time": "23:10",
+        "daily_top_timezone": "Europe/Moscow",
+        "daily_top_channel_id": "987654321",
+    })
+    assert response.status_code == 302
+    settings = config["automation"]
+    assert settings["daily_top_hour"] == 23
+    assert settings["daily_top_minute"] == 10
+    assert settings["daily_top_timezone"] == "Europe/Moscow"
+    assert settings["daily_top_channel_id"] == 987654321
+
+    page = client.get("/admin/automation")
+    assert page.status_code == 200
+    assert b"Europe/Moscow" in page.data
+    assert b"music-top" in page.data
+
+
+def test_automation_rejects_a_channel_the_bot_cannot_post_to(tmp_path):
+    from types import SimpleNamespace
+
+    class FakeChannel:
+        id = 987654321
+        name = "read-only"
+
+        def send(self, *args, **kwargs):
+            return None
+
+        def permissions_for(self, member):
+            return SimpleNamespace(send_messages=False, embed_links=False)
+
+    class FakeGuild:
+        id = 123456
+        name = "Spide Community"
+        me = object()
+        members = []
+        text_channels = [FakeChannel()]
+
+    bot = FakeBot(guilds=[FakeGuild()], ready=True)
+    client, config = build_client(tmp_path, bot=bot)
+    token = login(client)
+
+    response = client.post("/admin/automation", data={
+        "_csrf": token,
+        "telegram_enabled": "on",
+        "telegram_interval_minutes": "15",
+        "daily_top_enabled": "on",
+        "daily_top_time": "23:10",
+        "daily_top_timezone": "UTC",
+        "daily_top_channel_id": "987654321",
+    })
+    assert response.status_code == 302
+    assert config.get("automation", {}).get("daily_top_channel_id") is None
+
+
+def test_daily_top_publishes_to_channel_selected_in_automation_settings(tmp_path, monkeypatch):
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-selected-daily-top")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_selected_daily_top_test",
+    )
+    selected_channel = SimpleNamespace(id=987654321, send=lambda *args, **kwargs: None)
+    requested_ids = []
+    published_to = []
+
+    namespace["app_config"]["automation"]["daily_top_channel_id"] = 987654321
+    monkeypatch.setattr(
+        namespace["bot"],
+        "get_channel",
+        lambda channel_id: requested_ids.append(channel_id) or selected_channel,
+    )
+
+    async def fake_publish(channel):
+        published_to.append(channel)
+        return True
+
+    monkeypatch.setitem(namespace["_publish_daily_top"].__globals__, "_publish_top_to_channel", fake_publish)
+    assert asyncio.run(namespace["_publish_daily_top"]()) is True
+    assert requested_ids == [987654321]
+    assert published_to == [selected_channel]
+
+
+def test_daily_top_schedule_uses_selected_timezone_and_runs_once_per_local_day(tmp_path, monkeypatch):
+    import runpy
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-timezone-aware-top-schedule")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_timezone_top_schedule_test",
+    )
+
+    now = datetime(2026, 11, 4, 20, 22, tzinfo=timezone.utc)
+    settings = {
+        "daily_top_hour": 23,
+        "daily_top_minute": 22,
+        "daily_top_timezone": "Europe/Moscow",
+    }
+    due, local_date, timezone_name = namespace["_daily_top_schedule_due"](
+        now, settings, last_run_date=None
+    )
+    assert due is True
+    assert local_date == "2026-11-04"
+    assert timezone_name == "Europe/Moscow"
+
+    due_again, _, _ = namespace["_daily_top_schedule_due"](
+        now, settings, last_run_date=local_date
+    )
+    assert due_again is False
+
+    berlin_settings = {
+        "daily_top_hour": 21,
+        "daily_top_minute": 22,
+        "daily_top_timezone": "Europe/Berlin",
+    }
+    berlin_due, _, berlin_timezone = namespace["_daily_top_schedule_due"](
+        now, berlin_settings, last_run_date=None
+    )
+    assert berlin_due is True
+    assert berlin_timezone == "Europe/Berlin"
