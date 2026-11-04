@@ -1,7 +1,6 @@
 """Authenticated Flask admin panel for SpideBot.
 
-The panel intentionally exposes read-only user/server inspection. Destructive
-Discord moderation is not implemented until explicit permission rules exist.
+Discord moderation is opt-in and enforces the bot's permissions and role hierarchy.
 """
 from __future__ import annotations
 
@@ -15,6 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -27,6 +27,23 @@ from werkzeug.utils import secure_filename
 
 log = logging.getLogger("spide.admin")
 COMMANDS = ("search", "top", "links", "checktg", "rules", "setup_roles", "commands")
+
+
+def _safe_return_path(target, host_url):
+    """Return a local redirect path, rejecting external and ambiguous URLs."""
+    if not target or "\\" in target or any(ord(char) < 32 for char in target):
+        return None
+    try:
+        parsed = urlsplit(target)
+        origin = urlsplit(host_url)
+        if parsed.scheme or parsed.netloc:
+            if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
+                return None
+        if not parsed.path.startswith("/") or parsed.path.startswith("//"):
+            return None
+        return parsed.path + ("?" + parsed.query if parsed.query else "")
+    except ValueError:
+        return None
 
 
 def _ensure_secret(data_dir: Path) -> str:
@@ -281,8 +298,8 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
                     connection.close()
                 csrf_value()
                 audit("успешный вход")
-                target = request.args.get("next", "")
-                if not target.startswith("/") or target.startswith("//"):
+                target = _safe_return_path(request.args.get("next", ""), request.host_url)
+                if target is None:
                     target = url_for("admin.overview")
                 return redirect(target)
             else:
@@ -831,7 +848,7 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         except Exception:
             log.exception("Ошибка запуска административного действия %s", action_name)
             flash("Не удалось запустить действие. Проверьте логи.", "error")
-        return redirect(request.referrer if request.referrer and request.referrer.startswith("/") else url_for("admin.overview"))
+        return redirect(_safe_return_path(request.referrer, request.host_url) or url_for("admin.overview"))
 
     @bp.post("/backup/create")
     @login_required
@@ -841,7 +858,7 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
         safe_cfg = {k: v for k, v in cfg.items() if k != "SPIDE_COOKIE"}
         safe_cfg["_backup_meta"] = {"created_at": datetime.now(timezone.utc).isoformat(), "format": 1,
                                     "note": "SPIDE_COOKIE intentionally excluded"}
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         target = backup_dir / f"spide-config-{stamp}.json"
         target.write_text(json.dumps(safe_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
@@ -873,12 +890,22 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
             data = json.loads(upload.read().decode("utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Ожидался JSON-объект")
-            restored = {
+            restored = dict(get_config())
+            restored.update({
                 "tg_channels": data.get("tg_channels", []),
                 "last_ids": data.get("last_ids", {}),
                 "permissions": data.get("permissions", {}),
                 "SPIDE_COOKIE": get_config().get("SPIDE_COOKIE", ""),
-            }
+            })
+            for key in ("automation", "notifications", "automation_state"):
+                if key in data:
+                    if not isinstance(data[key], dict):
+                        raise ValueError(f"Некорректные настройки: {key}")
+                    restored[key] = data[key]
+            if "config_version" in data:
+                if type(data["config_version"]) is not int:
+                    raise ValueError("Некорректная версия настроек")
+                restored["config_version"] = data["config_version"]
             if not isinstance(restored["tg_channels"], list) or not all(isinstance(x, str) for x in restored["tg_channels"]):
                 raise ValueError("Некорректный список каналов")
             if not all(isinstance(restored[k], dict) for k in ("last_ids", "permissions")):

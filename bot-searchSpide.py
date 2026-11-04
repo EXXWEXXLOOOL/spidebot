@@ -46,6 +46,7 @@ CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
 DAILY_TOP_HISTORY_FILE = os.path.join(DATA_DIR, "daily_top_history.json")
 CUSTOM_ROLE_FILE = os.path.join(DATA_DIR, "custom_roles.json")
+CONFIG_STORAGE_LOCK = threading.RLock()
 CUSTOM_ROLE_STORAGE_LOCK = threading.RLock()
 CUSTOM_ROLE_CREATION_LOCK = asyncio.Lock()
 DAILY_TOP_HISTORY_LIMIT = 100
@@ -102,7 +103,10 @@ def load_config():
                 config_version = 1
 
             for key, default_value in DEFAULT_CONFIG.items():
-                if key not in data:
+                if key not in data or (
+                    isinstance(default_value, (dict, list))
+                    and not isinstance(data[key], type(default_value))
+                ):
                     data[key] = json.loads(json.dumps(default_value))
                     changed = True
                 elif isinstance(default_value, dict) and isinstance(data.get(key), dict):
@@ -149,19 +153,40 @@ def load_config():
                 changed = True
 
             if changed:
-                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=4)
+                save_config(data)
             return data
         except Exception as e:
             logging.error(f"Ошибка чтения конфига: {e}")
     return json.loads(json.dumps(DEFAULT_CONFIG))
 
 def save_config(config):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        logging.error(f"Ошибка сохранения конфига: {e}")
+    """Persist configuration atomically so concurrent web/bot writes cannot truncate it."""
+    with CONFIG_STORAGE_LOCK:
+        temporary_path = CONFIG_FILE + ".tmp"
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(temporary_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, CONFIG_FILE)
+        except Exception as e:
+            logging.error(f"Ошибка сохранения конфига: {e}")
+            try:
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
+            except OSError:
+                pass
+            raise
+
+
+def _admin_save_config(config):
+    """Apply panel replacements to the shared dictionary as well as disk."""
+    with CONFIG_STORAGE_LOCK:
+        save_config(config)
+        if config is not app_config:
+            app_config.clear()
+            app_config.update(config)
 
 app_config = load_config()
 
@@ -493,7 +518,11 @@ async def _process_due_giveaways(now=None):
                 giveaway["result_message_id"] = int(result_message.id)
             else:
                 await message.edit(embed=result_embed, view=result_view)
-                giveaway["result_message_id"] = int(message.id)
+                # The original message ID is already persisted. Test doubles and
+                # some compatible channel implementations may not expose ``id``.
+                giveaway["result_message_id"] = int(
+                    getattr(message, "id", giveaway.get("message_id", 0))
+                )
             giveaway["result_published"] = True
             giveaway.pop("result_publish_error", None)
             _save_giveaways(giveaways)
@@ -1776,7 +1805,7 @@ register_admin_panel(
     web_app,
     bot,
     get_config=lambda: app_config,
-    save_config=save_config,
+    save_config=_admin_save_config,
     get_logs=lambda: list(log_buffer),
     actions={
         "checktg": _admin_queue_checktg,
