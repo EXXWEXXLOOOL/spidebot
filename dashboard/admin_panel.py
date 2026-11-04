@@ -15,6 +15,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -488,43 +489,141 @@ def register_admin_panel(app, bot, get_config, save_config, get_logs,
                                             for p in files[:30]])
 
 
+    daily_top_timezone_options = [
+        ("UTC", "UTC"),
+        ("Europe/Moscow", "Europe/Moscow"),
+        ("Europe/Berlin", "Europe/Berlin"),
+        ("Europe/Amsterdam", "Europe/Amsterdam"),
+        ("Europe/London", "Europe/London"),
+        ("America/New_York", "America/New_York"),
+        ("Asia/Tokyo", "Asia/Tokyo"),
+    ]
+
+    def list_top_channels():
+        channels = []
+        try:
+            guilds = list(bot.guilds) if bot.is_ready() else []
+        except Exception:
+            guilds = []
+        for guild in guilds:
+            bot_member = getattr(guild, "me", None)
+            for channel in getattr(guild, "text_channels", []):
+                if not hasattr(channel, "send"):
+                    continue
+                if bot_member is not None and hasattr(channel, "permissions_for"):
+                    try:
+                        permissions = channel.permissions_for(bot_member)
+                        if not permissions.send_messages or not permissions.embed_links:
+                            continue
+                    except Exception:
+                        continue
+                channels.append({
+                    "id": str(channel.id),
+                    "name": f"{guild.name} / #{channel.name}",
+                })
+        channels.sort(key=lambda item: item["name"].lower())
+        return channels
+
     @bp.get("/automation")
     @login_required
     def automation():
         cfg = get_config()
         settings = cfg.get("automation", {})
         defaults = {
-            "telegram_enabled": True, "telegram_interval_minutes": 10,
-            "daily_top_enabled": True, "daily_top_hour_utc": 3,
-            "daily_top_minute_utc": 22,
+            "telegram_enabled": True,
+            "telegram_interval_minutes": 10,
+            "daily_top_enabled": True,
+            "daily_top_hour": settings.get("daily_top_hour_utc", 3),
+            "daily_top_minute": settings.get("daily_top_minute_utc", 22),
+            "daily_top_timezone": "UTC",
+            "daily_top_channel_id": 1566895795654107217,
         }
         defaults.update(settings)
-        return page("automation", automation_settings=defaults)
+        selected_channel_id = str(defaults.get("daily_top_channel_id") or 1566895795654107217)
+        channels = list_top_channels()
+        if not bot.is_ready() and selected_channel_id and not any(
+            item["id"] == selected_channel_id for item in channels
+        ):
+            channels.append({
+                "id": selected_channel_id,
+                "name": f"Сохранённый канал • ID {selected_channel_id} (бот не подключён)",
+            })
+        return page(
+            "automation",
+            automation_settings=defaults,
+            daily_top_channels=channels,
+            daily_top_timezone_options=daily_top_timezone_options,
+        )
 
     @bp.post("/automation")
     @login_required
     def save_automation():
         require_csrf()
+        cfg = get_config()
+        current_settings = cfg.get("automation", {})
         try:
             interval = int(request.form.get("telegram_interval_minutes", "10"))
-            hour = int(request.form.get("daily_top_hour_utc", "3"))
-            minute = int(request.form.get("daily_top_minute_utc", "22"))
+            time_value = request.form.get("daily_top_time", "").strip()
+            if time_value:
+                pieces = time_value.split(":")
+                if len(pieces) != 2:
+                    raise ValueError("Неверный формат времени")
+                hour, minute = int(pieces[0]), int(pieces[1])
+            else:
+                # Compatibility with existing forms and external automation.
+                hour = int(request.form.get(
+                    "daily_top_hour_utc",
+                    current_settings.get("daily_top_hour", current_settings.get("daily_top_hour_utc", 3)),
+                ))
+                minute = int(request.form.get(
+                    "daily_top_minute_utc",
+                    current_settings.get("daily_top_minute", current_settings.get("daily_top_minute_utc", 22)),
+                ))
+            timezone_name = request.form.get(
+                "daily_top_timezone",
+                current_settings.get("daily_top_timezone", "UTC"),
+            ).strip()
+            ZoneInfo(timezone_name)
             if not 1 <= interval <= 1440 or not 0 <= hour <= 23 or not 0 <= minute <= 59:
                 raise ValueError("Значения вне допустимого диапазона")
-        except ValueError:
-            flash("Проверьте интервал (1–1440 минут) и время UTC.", "error")
+        except (ValueError, ZoneInfoNotFoundError):
+            flash("Проверьте интервал, время и часовой пояс.", "error")
             return redirect(url_for("admin.automation"))
-        cfg = get_config()
-        cfg["automation"] = {
+
+        selected_channel = request.form.get("daily_top_channel_id", "").strip()
+        if not selected_channel:
+            selected_channel = str(
+                current_settings.get("daily_top_channel_id") or 1566895795654107217
+            )
+        if not selected_channel.isdigit() or int(selected_channel) <= 0:
+            flash("Выберите текстовый канал для публикации топа.", "error")
+            return redirect(url_for("admin.automation"))
+
+        available_channel_ids = {item["id"] for item in list_top_channels()}
+        bot_ready = bot.is_ready()
+        if bot_ready and selected_channel not in available_channel_ids:
+            flash("Выбранный канал недоступен или у бота нет прав отправлять в него Embed.", "error")
+            return redirect(url_for("admin.automation"))
+        if not bot_ready and selected_channel != str(
+            current_settings.get("daily_top_channel_id") or 1566895795654107217
+        ):
+            flash("Чтобы сменить канал, сначала подключите бота к Discord.", "error")
+            return redirect(url_for("admin.automation"))
+
+        automation_settings = dict(current_settings)
+        automation_settings.update({
             "telegram_enabled": request.form.get("telegram_enabled") == "on",
             "telegram_interval_minutes": interval,
             "daily_top_enabled": request.form.get("daily_top_enabled") == "on",
-            "daily_top_hour_utc": hour,
-            "daily_top_minute_utc": minute,
-        }
+            "daily_top_hour": hour,
+            "daily_top_minute": minute,
+            "daily_top_timezone": timezone_name,
+            "daily_top_channel_id": int(selected_channel),
+        })
+        cfg["automation"] = automation_settings
         save_config(cfg)
         audit("обновлены настройки автоматизации")
-        flash("Расписание сохранено. Планировщик применит настройки автоматически.", "success")
+        flash("Расписание и канал публикации топа сохранены.", "success")
         return redirect(url_for("admin.automation"))
 
     @bp.get("/notifications")
