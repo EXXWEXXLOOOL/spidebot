@@ -1187,3 +1187,51 @@ def test_daily_top_publishes_to_channel_selected_in_automation_settings(tmp_path
     assert asyncio.run(namespace["_publish_daily_top"]()) is True
     assert requested_ids == [987654321]
     assert published_to == [selected_channel]
+
+
+def test_daily_top_schedule_uses_selected_timezone_and_runs_once_per_local_day(tmp_path, monkeypatch):
+    import runpy
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-key-for-timezone-aware-top-schedule")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a-long-test-password")
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(project_root / "bot-searchSpide.py"),
+        run_name="spidebot_timezone_top_schedule_test",
+    )
+
+    now = datetime(2026, 11, 4, 20, 22, tzinfo=timezone.utc)
+    settings = {
+        "daily_top_hour": 23,
+        "daily_top_minute": 22,
+        "daily_top_timezone": "Europe/Moscow",
+    }
+    due, local_date, timezone_name = namespace["_daily_top_schedule_due"](
+        now, settings, last_run_date=None
+    )
+    assert due is True
+    assert local_date == "2026-11-04"
+    assert timezone_name == "Europe/Moscow"
+
+    due_again, _, _ = namespace["_daily_top_schedule_due"](
+        now, settings, last_run_date=local_date
+    )
+    assert due_again is False
+
+    berlin_settings = {
+        "daily_top_hour": 21,
+        "daily_top_minute": 22,
+        "daily_top_timezone": "Europe/Berlin",
+    }
+    berlin_due, _, berlin_timezone = namespace["_daily_top_schedule_due"](
+        now, berlin_settings, last_run_date=None
+    )
+    assert berlin_due is True
+    assert berlin_timezone == "Europe/Berlin"
