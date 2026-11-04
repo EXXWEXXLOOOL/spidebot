@@ -1084,6 +1084,7 @@ def test_automation_settings_save_local_time_timezone_and_selected_channel(tmp_p
         id = 123456
         name = "Spide Community"
         me = object()
+        members = []
 
         def __init__(self):
             self.text_channels = [FakeChannel()]
@@ -1131,6 +1132,7 @@ def test_automation_rejects_a_channel_the_bot_cannot_post_to(tmp_path):
         id = 123456
         name = "Spide Community"
         me = object()
+        members = []
         text_channels = [FakeChannel()]
 
     bot = FakeBot(guilds=[FakeGuild()], ready=True)
