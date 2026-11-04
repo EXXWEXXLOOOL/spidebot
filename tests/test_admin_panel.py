@@ -452,8 +452,13 @@ def test_legacy_daily_top_default_migrates_to_0322_utc(tmp_path, monkeypatch):
     assert namespace["app_config"]["config_version"] == 2
     assert namespace["app_config"]["automation"]["daily_top_hour_utc"] == 3
     assert namespace["app_config"]["automation"]["daily_top_minute_utc"] == 22
+    assert namespace["app_config"]["automation"]["daily_top_hour"] == 3
+    assert namespace["app_config"]["automation"]["daily_top_minute"] == 22
+    assert namespace["app_config"]["automation"]["daily_top_timezone"] == "UTC"
+    assert namespace["app_config"]["automation"]["daily_top_channel_id"] == 1566895795654107217
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert persisted["automation"]["daily_top_hour_utc"] == 3
+    assert persisted["automation"]["daily_top_hour"] == 3
 
 
 def test_custom_daily_top_time_is_preserved_during_migration(tmp_path, monkeypatch):
@@ -485,6 +490,9 @@ def test_custom_daily_top_time_is_preserved_during_migration(tmp_path, monkeypat
     )
     assert namespace["app_config"]["automation"]["daily_top_hour_utc"] == 5
     assert namespace["app_config"]["automation"]["daily_top_minute_utc"] == 45
+    assert namespace["app_config"]["automation"]["daily_top_hour"] == 5
+    assert namespace["app_config"]["automation"]["daily_top_minute"] == 45
+    assert namespace["app_config"]["automation"]["daily_top_timezone"] == "UTC"
 
 
 def test_daily_top_uses_only_configured_target_channel(tmp_path, monkeypatch):
