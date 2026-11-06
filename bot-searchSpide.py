@@ -2189,9 +2189,12 @@ async def _handle_slash_search(interaction: discord.Interaction, query: str):
             return
         embed, track_url = create_track_embed(tracks[0], interaction.user, query.strip())
         await interaction.followup.send(embed=embed, view=TrackView(track_url))
-    except Exception:
+    except Exception as exc:
         logging.exception("Ошибка slash-поиска Spide")
-        await interaction.followup.send("❌ Не удалось выполнить поиск. Попробуй ещё раз позже.")
+        detail = str(exc).strip()
+        await interaction.followup.send(
+            f"❌ {detail[:450]}" if detail else "❌ Не удалось выполнить поиск. Попробуй ещё раз позже."
+        )
 
 
 @bot.tree.command(name="search", description="Найти трек, альбом или исполнителя")
