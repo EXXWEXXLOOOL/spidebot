@@ -682,7 +682,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 SPIDE_API = "https://api.spidemusic.com/v1/spotify/search"
-SPIDE_SEARCH = "https://web.spide.ru/search"
+SPIDE_SEARCH = "https://web.spidemusic.com/search"
 SPIDE_TOP_LISTENERS = "https://api.spidemusic.com/v1/tops/listeners?tz=Europe/Moscow"
 
 ORANGE = 0xFF8C00
@@ -1031,7 +1031,7 @@ async def on_member_join(member):
     embed.set_footer(text=f"Spide Music • {member.name}")
 
     view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Слушать Spide", url="https://web.spide.ru", emoji="🎵"))
+    view.add_item(discord.ui.Button(label="Слушать Spide", url="https://web.spidemusic.com", emoji="🎵"))
 
     await channel.send(content=f"Привет, {member.mention}! 👋", embed=embed, view=view)
 
@@ -2006,7 +2006,7 @@ def _build_links_embed(author):
         value=(
             "👨‍💻 **Разраб:** @spidelond\n"
             "💬 **Телеграм канал:** [t.me/Spidedev](https://t.me/Spidedev)\n"
-            "🌐 **Веб версия:** [web.spide.ru](https://web.spide.ru)"
+            "🌐 **Веб версия:** [web.spidemusic.com](https://web.spidemusic.com)"
         ),
         inline=False,
     )
@@ -2081,7 +2081,7 @@ async def _handle_slash_search(interaction: discord.Interaction, query: str):
 
     headers = {
         "accept": "application/json",
-        "referer": "https://web.spide.ru/search",
+        "referer": "https://web.spidemusic.com/search",
         "user-agent": "Mozilla/5.0",
         "Cookie": cookie,
     }
