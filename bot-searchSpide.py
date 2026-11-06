@@ -681,9 +681,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-SPIDE_API = "https://web.spide.ru/api/v1/spotify/search"
+SPIDE_API = "https://api.spidemusic.com/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spide.ru/search"
-SPIDE_TOP_LISTENERS = "https://web.spide.ru/api/v1/tops/listeners?tz=Europe/Moscow"
+SPIDE_TOP_LISTENERS = "https://api.spidemusic.com/v1/tops/listeners?tz=Europe/Moscow"
 
 ORANGE = 0xFF8C00
 
