@@ -681,9 +681,192 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-SPIDE_API = "https://api.spidemusic.com/v1/spotify/search"
+SPIDE_API_BASE = "https://api.spidemusic.com/v1"
+SPIDE_API = f"{SPIDE_API_BASE}/spotify/search"
 SPIDE_SEARCH = "https://web.spidemusic.com/search"
 SPIDE_TOP_LISTENERS = "https://api.spidemusic.com/v1/tops/listeners?tz=Europe/Moscow"
+SPIDE_WEB_ORIGIN = "https://web.spidemusic.com"
+
+
+_SPIDE_REFRESH_LOCK = threading.Lock()
+
+
+def _spide_credential_parts(value):
+    """Accept browser Cookie headers, Authorization headers, and Spide access/refresh token pairs."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "", "", ""
+
+    authorization = ""
+    cookie = ""
+    for line in (part.strip() for part in raw.splitlines() if part.strip()):
+        lower = line.lower()
+        if lower.startswith("authorization:"):
+            authorization = line.split(":", 1)[1].strip()
+        elif lower.startswith("cookie:"):
+            cookie = line.split(":", 1)[1].strip()
+
+    if not authorization and not cookie:
+        if raw.lower().startswith("authorization:"):
+            authorization = raw.split(":", 1)[1].strip()
+        elif raw.lower().startswith("cookie:"):
+            cookie = raw.split(":", 1)[1].strip()
+        elif raw.lower().startswith("bearer "):
+            authorization = raw
+        elif "=" not in raw and ";" not in raw and "\n" not in raw:
+            # A lone value is treated as the access token expected by the current API.
+            authorization = raw
+        else:
+            cookie = raw
+
+    bearer = ""
+    if authorization:
+        bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else authorization
+
+    refresh = ""
+    if cookie:
+        access_match = re.search(
+            r"(?:^|;\s*)access[_-]?token(?:_v1)?=([^;]+)",
+            cookie,
+            flags=re.IGNORECASE,
+        )
+        refresh_match = re.search(
+            r"(?:^|;\s*)refresh[_-]?token(?:_v1)?=([^;]+)",
+            cookie,
+            flags=re.IGNORECASE,
+        )
+        if access_match and not bearer:
+            bearer = access_match.group(1).strip().strip('"').strip("'")
+        if refresh_match:
+            refresh = refresh_match.group(1).strip().strip('"').strip("'")
+
+    return cookie, bearer, refresh
+
+
+def _spide_headers(credential, referer=None):
+    """Build browser-compatible request headers and attach Bearer auth when available."""
+    cookie, bearer, _refresh = _spide_credential_parts(credential)
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "origin": SPIDE_WEB_ORIGIN,
+        "referer": referer or f"{SPIDE_WEB_ORIGIN}/",
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    return headers
+
+
+def _store_spide_tokens(access_token, refresh_token):
+    """Persist rotated Spide tokens without exposing them in logs or the admin UI."""
+    with CONFIG_STORAGE_LOCK:
+        app_config["SPIDE_COOKIE"] = (
+            f"access_token={access_token}; refresh_token={refresh_token}"
+        )
+        save_config(app_config)
+
+
+def _refresh_spide_access_token(refresh_token, referer=None):
+    """Refresh a short-lived access token using the contract shipped in the Spide APK."""
+    response = requests.post(
+        f"{SPIDE_API_BASE}/auth/refresh",
+        json={"refreshToken": refresh_token},
+        headers={
+            "accept": "application/json",
+            "origin": SPIDE_WEB_ORIGIN,
+            "referer": referer or f"{SPIDE_WEB_ORIGIN}/",
+        },
+        impersonate="chrome",
+        timeout=20,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Spide не принял refresh_token (HTTP {response.status_code}). "
+            "Обнови пару access_token и refresh_token в панели."
+        )
+
+    data = response.json()
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    if not isinstance(data, dict) or not data.get("accessToken"):
+        raise RuntimeError("Spide refresh endpoint ответил без accessToken.")
+    new_access = str(data["accessToken"]).strip()
+    new_refresh = str(data.get("refreshToken") or refresh_token).strip()
+    if not new_access:
+        raise RuntimeError("Spide refresh endpoint вернул пустой accessToken.")
+    return new_access, new_refresh
+
+
+def _spide_get(url, credential, referer=None, timeout=20):
+    """GET a Spide API endpoint and refresh/retry once after an expired access token."""
+    headers = _spide_headers(credential, referer=referer)
+    response = requests.get(
+        url,
+        headers=headers,
+        impersonate="chrome",
+        timeout=timeout,
+    )
+    if response.status_code != 401:
+        return response
+
+    _cookie, _bearer, refresh_token = _spide_credential_parts(credential)
+    if not refresh_token:
+        return response
+
+    with _SPIDE_REFRESH_LOCK:
+        # A concurrent request may already have refreshed and rotated the tokens.
+        current_credential = str(app_config.get("SPIDE_COOKIE") or credential).strip()
+        _current_cookie, current_bearer, current_refresh = _spide_credential_parts(current_credential)
+        if current_credential != str(credential).strip() and current_bearer:
+            access_token = current_bearer
+            refresh_token = current_refresh or refresh_token
+        else:
+            access_token, refresh_token = _refresh_spide_access_token(
+                refresh_token,
+                referer=referer,
+            )
+            _store_spide_tokens(access_token, refresh_token)
+
+        retry_credential = (
+            f"access_token={access_token}; refresh_token={refresh_token}"
+        )
+        response = requests.get(
+            url,
+            headers=_spide_headers(retry_credential, referer=referer),
+            impersonate="chrome",
+            timeout=timeout,
+        )
+    return response
+
+
+def _spide_http_error(response, operation):
+    """Explain the HTTP failure without incorrectly labelling every failure as an expired cookie."""
+    status = response.status_code
+    if status == 401:
+        return (
+            f"Spide отклонил авторизацию для операции «{operation}» (HTTP 401). "
+            "Актуальный APK использует Authorization: Bearer access_token; "
+            "обычная browser-cookie может не подходить. Вставь access_token "
+            "или пару access_token=...; refresh_token=... — тогда бот сможет "
+            "обновлять короткоживущий access token автоматически."
+        )
+    if status == 403:
+        return (
+            f"Spide запретил операцию «{operation}» (HTTP 403). "
+            "Это не доказывает, что cookie устарела: проверь тип авторизации "
+            "и доступ аккаунта к этому endpoint."
+        )
+    if status == 404:
+        return f"Spide не нашёл endpoint операции «{operation}» (HTTP 404). Проверь API-маршрут."
+    if status in (400, 422):
+        return f"Spide отклонил параметры операции «{operation}» (HTTP {status}). Проверь формат запроса."
+    if status == 429:
+        return f"Spide ограничил частоту запросов для операции «{operation}» (HTTP 429). Попробуй позже."
+    if status >= 500:
+        return f"Сервер Spide вернул ошибку при операции «{operation}» (HTTP {status}); это не ошибка cookie."
+    return f"Spide вернул HTTP {status} для операции «{operation}»."
+
 
 ORANGE = 0xFF8C00
 
@@ -1191,9 +1374,9 @@ def _admin_get_top_data():
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie:
         raise RuntimeError("Spide cookie is not configured")
-    headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
-    response = requests.get(SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
-    response.raise_for_status()
+    response = _spide_get(SPIDE_TOP_LISTENERS, cookie, referer=f"{SPIDE_WEB_ORIGIN}/", timeout=20)
+    if response.status_code != 200:
+        raise RuntimeError(_spide_http_error(response, "загрузка топа для панели"))
     data = response.json()
     if not isinstance(data, dict):
         raise ValueError("Unexpected Spide API response")
@@ -1217,11 +1400,17 @@ def format_artists(artists):
     names = [str(a.get("name")) for a in artists if isinstance(a, dict) and a.get("name")]
     return ", ".join(names) if names else "Неизвестный исполнитель"
 
-def search_spide(query, headers):
+def search_spide(query, credential):
     params = urllib.parse.urlencode({"q": query, "type": "all", "limit": 10})
     url = f"{SPIDE_API}?{params}"
-    response = requests.get(url, headers=headers, impersonate="chrome", timeout=20)
-    response.raise_for_status()
+    response = _spide_get(
+        url,
+        credential,
+        referer=f"{SPIDE_WEB_ORIGIN}/search",
+        timeout=20,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(_spide_http_error(response, "поиск музыки"))
     data = response.json()
     if data.get("error"): raise ValueError(str(data["error"]))
     return data
@@ -1401,20 +1590,18 @@ async def force_top(target_channel):
         await target_channel.send("❌ Ошибка: Куки Spide не заданы.")
         return False
 
-    headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
-
     try:
         response = await asyncio.to_thread(
-            requests.get,
+            _spide_get,
             SPIDE_TOP_LISTENERS,
-            headers=headers,
-            impersonate="chrome",
-            timeout=20
+            cookie,
+            f"{SPIDE_WEB_ORIGIN}/",
+            20,
         )
 
         if response.status_code != 200:
-            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Куки могли устареть."
-            logging.error(err_msg)
+            err_msg = "❌ " + _spide_http_error(response, "топ слушателей")
+            logging.error("%s | content_type=%s", err_msg, response.headers.get("content-type", ""))
             await target_channel.send(err_msg)
             return False
 
@@ -1436,17 +1623,33 @@ async def force_top(target_channel):
 async def test_spide_cookie():
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie:
-        logging.warning("Тест куки: Куки не заданы!")
+        logging.warning("Тест Spide auth: credentials не заданы.")
         return
-    headers = {"accept": "application/json", "Cookie": cookie}
-    try:
-        response = await asyncio.to_thread(requests.get, f"{SPIDE_API}?q=test&type=all&limit=1", headers=headers, impersonate="chrome", timeout=10)
-        if response.status_code == 200:
-            logging.info("✅ Тест куки: УСПЕШНО! Куки рабочие.")
-        else:
-            logging.error(f"❌ Тест куки: ОШИБКА {response.status_code}.")
-    except Exception as e:
-        logging.error(f"❌ Тест куки: Ошибка - {e}")
+
+    checks = (
+        ("поиск", f"{SPIDE_API}?q=test&type=all&limit=1", f"{SPIDE_WEB_ORIGIN}/search"),
+        ("топ слушателей", SPIDE_TOP_LISTENERS, f"{SPIDE_WEB_ORIGIN}/"),
+    )
+    for operation, url, referer in checks:
+        try:
+            response = await asyncio.to_thread(
+                _spide_get,
+                url,
+                cookie,
+                referer,
+                15,
+            )
+            if response.status_code == 200:
+                logging.info("✅ Spide auth (%s): HTTP 200, endpoint ответил.", operation)
+            else:
+                logging.error(
+                    "❌ Spide auth (%s): %s | content_type=%s",
+                    operation,
+                    _spide_http_error(response, operation),
+                    response.headers.get("content-type", ""),
+                )
+        except Exception as exc:
+            logging.error("❌ Spide auth (%s): запрос не выполнен: %s", operation, exc)
 
 # ==============================
 # ==============================
@@ -2079,23 +2282,20 @@ async def _handle_slash_search(interaction: discord.Interaction, query: str):
         await interaction.followup.send("❌ Куки Spide не настроены.")
         return
 
-    headers = {
-        "accept": "application/json",
-        "referer": "https://web.spidemusic.com/search",
-        "user-agent": "Mozilla/5.0",
-        "Cookie": cookie,
-    }
     try:
-        data = await asyncio.to_thread(search_spide, query.strip(), headers)
+        data = await asyncio.to_thread(search_spide, query.strip(), cookie)
         tracks = data.get("tracks", [])
         if not tracks:
             await interaction.followup.send(f"По запросу {query[:150]} ничего не найдено.")
             return
         embed, track_url = create_track_embed(tracks[0], interaction.user, query.strip())
         await interaction.followup.send(embed=embed, view=TrackView(track_url))
-    except Exception:
+    except Exception as exc:
         logging.exception("Ошибка slash-поиска Spide")
-        await interaction.followup.send("❌ Не удалось выполнить поиск. Попробуй ещё раз позже.")
+        detail = str(exc).strip()
+        await interaction.followup.send(
+            f"❌ {detail[:450]}" if detail else "❌ Не удалось выполнить поиск. Попробуй ещё раз позже."
+        )
 
 
 @bot.tree.command(name="search", description="Найти трек, альбом или исполнителя")
