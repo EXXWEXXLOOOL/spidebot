@@ -684,6 +684,95 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPIDE_API = "https://api.spidemusic.com/v1/spotify/search"
 SPIDE_SEARCH = "https://web.spidemusic.com/search"
 SPIDE_TOP_LISTENERS = "https://api.spidemusic.com/v1/tops/listeners?tz=Europe/Moscow"
+SPIDE_WEB_ORIGIN = "https://web.spidemusic.com"
+
+
+def _spide_credential_parts(value):
+    """Accept a Cookie header, an Authorization header, or a raw API access token."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "", ""
+
+    authorization = ""
+    cookie = ""
+    for line in (part.strip() for part in raw.splitlines() if part.strip()):
+        lower = line.lower()
+        if lower.startswith("authorization:"):
+            authorization = line.split(":", 1)[1].strip()
+        elif lower.startswith("cookie:"):
+            cookie = line.split(":", 1)[1].strip()
+
+    if not authorization and not cookie:
+        if raw.lower().startswith("authorization:"):
+            authorization = raw.split(":", 1)[1].strip()
+        elif raw.lower().startswith("cookie:"):
+            cookie = raw.split(":", 1)[1].strip()
+        elif raw.lower().startswith("bearer "):
+            authorization = raw
+        elif "=" not in raw and ";" not in raw and "\\n" not in raw:
+            # A lone value is treated as the access token expected by the current API.
+            authorization = raw
+        else:
+            cookie = raw
+
+    bearer = ""
+    if authorization:
+        bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else authorization
+
+    if cookie:
+        # Some browser cookie exports include the API access token as a named cookie.
+        match = re.search(
+            r"(?:^|;\\s*)access_token(?:_v1)?=([^;]+)",
+            cookie,
+            flags=re.IGNORECASE,
+        )
+        if match and not bearer:
+            bearer = match.group(1).strip()
+
+    return cookie, bearer
+
+
+def _spide_headers(credential, referer=None):
+    """Build browser-compatible Spide headers and use Bearer auth when a token is supplied."""
+    cookie, bearer = _spide_credential_parts(credential)
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "origin": SPIDE_WEB_ORIGIN,
+        "referer": referer or f"{SPIDE_WEB_ORIGIN}/",
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    return headers
+
+
+def _spide_http_error(response, operation):
+    """Explain the HTTP failure without incorrectly labelling every failure as an expired cookie."""
+    status = response.status_code
+    if status == 401:
+        return (
+            f"Spide отклонил авторизацию для операции «{operation}» (HTTP 401). "
+            "Актуальный APK использует Authorization: Bearer access_token; "
+            "обычная browser-cookie может не подходить. Вставь access_token "
+            "(можно с префиксом Bearer) в поле Spide cookie."
+        )
+    if status == 403:
+        return (
+            f"Spide запретил операцию «{operation}» (HTTP 403). "
+            "Это не доказывает, что cookie устарела: проверь тип авторизации "
+            "и доступ аккаунта к этому endpoint."
+        )
+    if status == 404:
+        return f"Spide не нашёл endpoint операции «{operation}» (HTTP 404). Проверь API-маршрут."
+    if status in (400, 422):
+        return f"Spide отклонил параметры операции «{operation}» (HTTP {status}). Проверь формат запроса."
+    if status == 429:
+        return f"Spide ограничил частоту запросов для операции «{operation}» (HTTP 429). Попробуй позже."
+    if status >= 500:
+        return f"Сервер Spide вернул ошибку при операции «{operation}» (HTTP {status}); это не ошибка cookie."
+    return f"Spide вернул HTTP {status} для операции «{operation}»."
+
 
 ORANGE = 0xFF8C00
 
@@ -1191,9 +1280,10 @@ def _admin_get_top_data():
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie:
         raise RuntimeError("Spide cookie is not configured")
-    headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
+    headers = _spide_headers(cookie, referer=f"{SPIDE_WEB_ORIGIN}/")
     response = requests.get(SPIDE_TOP_LISTENERS, headers=headers, impersonate="chrome", timeout=20)
-    response.raise_for_status()
+    if response.status_code != 200:
+        raise RuntimeError(_spide_http_error(response, "загрузка топа для панели"))
     data = response.json()
     if not isinstance(data, dict):
         raise ValueError("Unexpected Spide API response")
@@ -1221,7 +1311,8 @@ def search_spide(query, headers):
     params = urllib.parse.urlencode({"q": query, "type": "all", "limit": 10})
     url = f"{SPIDE_API}?{params}"
     response = requests.get(url, headers=headers, impersonate="chrome", timeout=20)
-    response.raise_for_status()
+    if response.status_code != 200:
+        raise RuntimeError(_spide_http_error(response, "поиск музыки"))
     data = response.json()
     if data.get("error"): raise ValueError(str(data["error"]))
     return data
@@ -1401,7 +1492,7 @@ async def force_top(target_channel):
         await target_channel.send("❌ Ошибка: Куки Spide не заданы.")
         return False
 
-    headers = {"accept": "application/json", "user-agent": "Mozilla/5.0", "Cookie": cookie}
+    headers = _spide_headers(cookie, referer=f"{SPIDE_WEB_ORIGIN}/")
 
     try:
         response = await asyncio.to_thread(
@@ -1413,8 +1504,8 @@ async def force_top(target_channel):
         )
 
         if response.status_code != 200:
-            err_msg = f"❌ Ошибка Spide: код {response.status_code}. Куки могли устареть."
-            logging.error(err_msg)
+            err_msg = "❌ " + _spide_http_error(response, "топ слушателей")
+            logging.error("%s | content_type=%s", err_msg, response.headers.get("content-type", ""))
             await target_channel.send(err_msg)
             return False
 
@@ -1438,13 +1529,23 @@ async def test_spide_cookie():
     if not cookie:
         logging.warning("Тест куки: Куки не заданы!")
         return
-    headers = {"accept": "application/json", "Cookie": cookie}
+    headers = _spide_headers(cookie, referer=f"{SPIDE_WEB_ORIGIN}/search")
     try:
-        response = await asyncio.to_thread(requests.get, f"{SPIDE_API}?q=test&type=all&limit=1", headers=headers, impersonate="chrome", timeout=10)
+        response = await asyncio.to_thread(
+            requests.get,
+            f"{SPIDE_API}?q=test&type=all&limit=1",
+            headers=headers,
+            impersonate="chrome",
+            timeout=10,
+        )
         if response.status_code == 200:
-            logging.info("✅ Тест куки: УСПЕШНО! Куки рабочие.")
+            logging.info("✅ Тест Spide auth: API принял текущие credentials.")
         else:
-            logging.error(f"❌ Тест куки: ОШИБКА {response.status_code}.")
+            logging.error(
+                "❌ Тест Spide auth: %s | content_type=%s",
+                _spide_http_error(response, "проверка авторизации"),
+                response.headers.get("content-type", ""),
+            )
     except Exception as e:
         logging.error(f"❌ Тест куки: Ошибка - {e}")
 
@@ -2079,12 +2180,7 @@ async def _handle_slash_search(interaction: discord.Interaction, query: str):
         await interaction.followup.send("❌ Куки Spide не настроены.")
         return
 
-    headers = {
-        "accept": "application/json",
-        "referer": "https://web.spidemusic.com/search",
-        "user-agent": "Mozilla/5.0",
-        "Cookie": cookie,
-    }
+    headers = _spide_headers(cookie, referer=f"{SPIDE_WEB_ORIGIN}/search")
     try:
         data = await asyncio.to_thread(search_spide, query.strip(), headers)
         tracks = data.get("tracks", [])
