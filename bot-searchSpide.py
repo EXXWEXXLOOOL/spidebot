@@ -1374,7 +1374,6 @@ def _admin_get_top_data():
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie:
         raise RuntimeError("Spide cookie is not configured")
-    headers = _spide_headers(cookie, referer=f"{SPIDE_WEB_ORIGIN}/")
     response = _spide_get(SPIDE_TOP_LISTENERS, cookie, referer=f"{SPIDE_WEB_ORIGIN}/", timeout=20)
     if response.status_code != 200:
         raise RuntimeError(_spide_http_error(response, "загрузка топа для панели"))
