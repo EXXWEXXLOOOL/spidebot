@@ -709,7 +709,7 @@ def _spide_credential_parts(value):
             cookie = raw.split(":", 1)[1].strip()
         elif raw.lower().startswith("bearer "):
             authorization = raw
-        elif "=" not in raw and ";" not in raw and "\\n" not in raw:
+        elif "=" not in raw and ";" not in raw and "\n" not in raw:
             # A lone value is treated as the access token expected by the current API.
             authorization = raw
         else:
@@ -722,7 +722,7 @@ def _spide_credential_parts(value):
     if cookie:
         # Some browser cookie exports include the API access token as a named cookie.
         match = re.search(
-            r"(?:^|;\\s*)access_token(?:_v1)?=([^;]+)",
+            r"(?:^|;\s*)access_token(?:_v1)?=([^;]+)",
             cookie,
             flags=re.IGNORECASE,
         )
