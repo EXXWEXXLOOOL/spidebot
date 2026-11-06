@@ -1527,27 +1527,34 @@ async def force_top(target_channel):
 async def test_spide_cookie():
     cookie = app_config.get("SPIDE_COOKIE", "")
     if not cookie:
-        logging.warning("Тест куки: Куки не заданы!")
+        logging.warning("Тест Spide auth: credentials не заданы.")
         return
-    headers = _spide_headers(cookie, referer=f"{SPIDE_WEB_ORIGIN}/search")
-    try:
-        response = await asyncio.to_thread(
-            requests.get,
-            f"{SPIDE_API}?q=test&type=all&limit=1",
-            headers=headers,
-            impersonate="chrome",
-            timeout=10,
-        )
-        if response.status_code == 200:
-            logging.info("✅ Тест Spide auth: API принял текущие credentials.")
-        else:
-            logging.error(
-                "❌ Тест Spide auth: %s | content_type=%s",
-                _spide_http_error(response, "проверка авторизации"),
-                response.headers.get("content-type", ""),
+
+    checks = (
+        ("поиск", f"{SPIDE_API}?q=test&type=all&limit=1", f"{SPIDE_WEB_ORIGIN}/search"),
+        ("топ слушателей", SPIDE_TOP_LISTENERS, f"{SPIDE_WEB_ORIGIN}/"),
+    )
+    for operation, url, referer in checks:
+        try:
+            headers = _spide_headers(cookie, referer=referer)
+            response = await asyncio.to_thread(
+                requests.get,
+                url,
+                headers=headers,
+                impersonate="chrome",
+                timeout=15,
             )
-    except Exception as e:
-        logging.error(f"❌ Тест куки: Ошибка - {e}")
+            if response.status_code == 200:
+                logging.info("✅ Spide auth (%s): HTTP 200, endpoint ответил.", operation)
+            else:
+                logging.error(
+                    "❌ Spide auth (%s): %s | content_type=%s",
+                    operation,
+                    _spide_http_error(response, operation),
+                    response.headers.get("content-type", ""),
+                )
+        except Exception as exc:
+            logging.error("❌ Spide auth (%s): запрос не выполнен: %s", operation, exc)
 
 # ==============================
 # ==============================
