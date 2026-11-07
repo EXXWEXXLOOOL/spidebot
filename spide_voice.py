@@ -115,7 +115,7 @@ class GuildVoicePlayer:
             queue.append(track)
             if not voice.is_playing() and not voice.is_paused():
                 await self._start_next(guild.id, voice)
-            return len(queue)
+            return (1 if guild.id in self.current else 0) + len(queue)
 
     async def _start_next(self, guild_id, voice=None):
         guild = self.bot.get_guild(guild_id)
