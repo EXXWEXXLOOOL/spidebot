@@ -2137,8 +2137,8 @@ def _build_role_select_embed():
     return discord.Embed(
         title="🎭 Выбор платформы",
         description=(
-            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\\n\\n"
-            "🤖 **Android**\\n🌐 **Web**\\n💻 **Desktop**\\n🎨 **Своя роль** — создать одну личную роль с выбранным цветом"
+            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\n\n"
+            "🤖 **Android**\n🌐 **Web**\n💻 **Desktop**\n🎨 **Своя роль** — создать одну личную роль с выбранным цветом"
         ),
         color=ORANGE,
     )
@@ -2376,7 +2376,7 @@ async def slash_play(interaction: discord.Interaction, channel: discord.VoiceCha
             QueuedTrack(title=f"{title} — {artists}", stream_url=stream_url),
         )
         await interaction.followup.send(
-            f"🎶 Добавлено в очередь канала **{channel.name}**: **{title} — {artists}**\\n"
+            f"🎶 Добавлено в очередь канала **{channel.name}**: **{title} — {artists}**\n"
             f"Позиция: **{position}**.",
             ephemeral=True,
         )
