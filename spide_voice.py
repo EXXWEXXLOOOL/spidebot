@@ -9,10 +9,9 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
-import re
 import urllib.parse
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable
 
 import discord
 
@@ -42,10 +41,16 @@ def _find_stream_url(payload):
 def resolve_spide_stream(track: dict, credential: str, spide_get: Callable,
                          api_base: str) -> str:
     """Resolve a provider track using Spide's app API and return its HTTPS URL."""
-    source = str(
+    source_value = (
         track.get("source") or track.get("sourceType") or
         track.get("provider") or track.get("platform") or "spotify"
-    ).strip().lower()
+    )
+    if isinstance(source_value, dict):
+        source_value = (
+            source_value.get("name") or source_value.get("type") or
+            source_value.get("kind") or "spotify"
+        )
+    source = str(source_value).strip().lower()
     source = source.replace("music", "").replace("_", "").replace("-", "")
     aliases = {
         "spotify": "spotify", "sp": "spotify",
@@ -56,9 +61,14 @@ def resolve_spide_stream(track: dict, credential: str, spide_get: Callable,
     if not provider:
         raise ValueError("Не удалось определить источник трека Spide.")
 
+    source_ids = track.get("sourceIds") or track.get("source_ids") or {}
+    if not isinstance(source_ids, dict):
+        source_ids = {}
+    provider_id = source_ids.get(provider) or source_ids.get(provider.lower())
     track_id = str(
         track.get("id") or track.get("trackId") or track.get("track_id") or
-        track.get("sourceId") or track.get("source_id") or ""
+        track.get("sourceId") or track.get("source_id") or provider_id or
+        track.get(f"{provider}Id") or track.get(f"{provider}_id") or ""
     ).strip()
     if not track_id:
         raise ValueError("В ответе поиска Spide отсутствует ID трека.")
