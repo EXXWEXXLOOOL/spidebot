@@ -89,8 +89,65 @@ def install_voice_transport_diagnostics(voice, guild_id):
         "track_packets": 0,
         "track_bytes": 0,
         "track_errors": 0,
+        "dave_packets": 0,
+        "plain_packets": 0,
+        "speak_success": 0,
+        "speak_errors": 0,
         "guild_id": guild_id,
     }
+
+    # AudioPlayer schedules this coroutine from its worker thread and does not
+    # surface failures through its after= callback. Observe its actual outcome.
+    original_speak = getattr(connection, "speak", None)
+    if callable(original_speak):
+        async def observed_speak(*args, **kwargs):
+            try:
+                result = await original_speak(*args, **kwargs)
+            except Exception:
+                state["speak_errors"] += 1
+                logging.exception(
+                    "VOICE SPEAKING SIGNAL FAILED guild=%s args=%r",
+                    state["guild_id"], args,
+                )
+                raise
+            state["speak_success"] += 1
+            logging.info(
+                "VOICE SPEAKING SIGNAL SENT guild=%s args=%r count=%s",
+                state["guild_id"], args, state["speak_success"],
+            )
+            return result
+
+        connection.speak = observed_speak
+
+    # Record whether discord.py actually applies the DAVE layer before RTP
+    # transport encryption. This is observational only; packet construction
+    # remains entirely owned by discord.py.
+    original_get_voice_packet = getattr(voice, "_get_voice_packet", None)
+    if callable(original_get_voice_packet):
+        def observed_get_voice_packet(data):
+            has_dave_session = getattr(connection, "dave_session", None) is not None
+            can_encrypt = bool(getattr(connection, "can_encrypt", False))
+            try:
+                packet = original_get_voice_packet(data)
+            except Exception:
+                logging.exception(
+                    "VOICE PACKET ENCRYPTION FAILED guild=%s dave_session=%s can_encrypt=%s",
+                    state["guild_id"], has_dave_session, can_encrypt,
+                )
+                raise
+            key = "dave_packets" if has_dave_session and can_encrypt else "plain_packets"
+            state[key] += 1
+            total = state["dave_packets"] + state["plain_packets"]
+            if total == 1 or total % 1000 == 0:
+                logging.info(
+                    "VOICE DAVE PACKET STATE guild=%s dave_session=%s can_encrypt=%s "
+                    "dave_packets=%s non_dave_packets=%s",
+                    state["guild_id"], has_dave_session, can_encrypt,
+                    state["dave_packets"], state["plain_packets"],
+                )
+            return packet
+
+        voice._get_voice_packet = observed_get_voice_packet
 
     def observed_send_packet(packet):
         try:
@@ -284,6 +341,13 @@ class GuildVoicePlayer:
                         "bytes_ok=%s socket_errors=%s",
                         guild_id, track.title, transport["track_packets"],
                         transport["track_bytes"], transport["track_errors"],
+                    )
+                    logging.info(
+                        "VOICE DAVE SUMMARY guild=%s dave_packets=%s non_dave_packets=%s "
+                        "speak_success=%s speak_errors=%s can_encrypt_final=%s",
+                        guild_id, transport["dave_packets"], transport["plain_packets"],
+                        transport["speak_success"], transport["speak_errors"],
+                        getattr(getattr(voice, "_connection", None), "can_encrypt", None),
                     )
                 if error:
                     self.last_errors[guild_id] = str(error)[:500]
