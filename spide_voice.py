@@ -153,7 +153,13 @@ class GuildVoicePlayer:
 
             def after_play(error):
                 if error:
-                    logging.error("Voice playback failed in guild %s: %s", guild_id, error)
+                    self.last_errors[guild_id] = str(error)[:500]
+                    logging.error(
+                        "Voice playback failed in guild %s: %s",
+                        guild_id,
+                        error,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
                 asyncio.run_coroutine_threadsafe(self._start_next(guild_id), loop)
 
             voice.play(source, after=after_play)
