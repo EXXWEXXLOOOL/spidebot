@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlparse, parse_qs
 
-from spide_voice import GuildVoicePlayer, QueuedTrack, resolve_spide_stream
+from spide_voice import AudioDiagnosticsSource, GuildVoicePlayer, QueuedTrack, resolve_spide_stream
 
 
 class FakeResponse:
@@ -82,6 +82,25 @@ class SpideStreamResolverTests(unittest.TestCase):
                 "https://api.spidemusic.com/v1",
             )
 
+
+
+    def test_audio_diagnostics_detects_non_silent_pcm(self):
+        class FakeSource:
+            def __init__(self):
+                self.chunks = [bytes([0, 0, 16, 0]), b"",]
+
+            def read(self):
+                return self.chunks.pop(0)
+
+            def cleanup(self):
+                pass
+
+        measured = AudioDiagnosticsSource(FakeSource())
+        self.assertEqual(measured.read(), bytes([0, 0, 16, 0]))
+        self.assertEqual(measured.read(), b"")
+        self.assertEqual(measured.frames, 1)
+        self.assertEqual(measured.nonzero_frames, 1)
+        self.assertEqual(measured.peak, 16)
 
     def test_player_reports_ffmpeg_startup_failure(self):
         class FakeVoice:

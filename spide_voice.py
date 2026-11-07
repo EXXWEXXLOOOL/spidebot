@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import struct
 import urllib.parse
 from importlib.resources import files
 from pathlib import Path
@@ -34,6 +35,35 @@ def ensure_opus_loaded():
         )
 
     discord.opus.load_opus(str(candidates[0]))
+
+
+class AudioDiagnosticsSource(discord.AudioSource):
+    """Pass PCM through unchanged while measuring whether FFmpeg outputs sound."""
+
+    def __init__(self, source):
+        self.source = source
+        self.frames = 0
+        self.nonzero_frames = 0
+        self.peak = 0
+
+    def read(self):
+        data = self.source.read()
+        if data:
+            self.frames += 1
+            samples = struct.iter_unpack("<h", data)
+            frame_peak = max((abs(sample[0]) for sample in samples), default=0)
+            self.peak = max(self.peak, frame_peak)
+            if frame_peak:
+                self.nonzero_frames += 1
+        return data
+
+    def is_opus(self):
+        return False
+
+    def cleanup(self):
+        cleanup = getattr(self.source, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
 
 
 @dataclass
@@ -172,10 +202,29 @@ class GuildVoicePlayer:
                 before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
                 options="-vn",
             )
-            source = discord.PCMVolumeTransformer(audio, volume=self.volumes[guild_id])
+            measured = AudioDiagnosticsSource(audio)
+            source = discord.PCMVolumeTransformer(
+                measured, volume=self.volumes[guild_id]
+            )
             loop = self.bot.loop
 
             def after_play(error):
+                logging.info(
+                    "Voice audio stats guild=%s title=%r pcm_frames=%s "
+                    "non_silent_frames=%s peak_pcm=%s",
+                    guild_id, track.title, measured.frames,
+                    measured.nonzero_frames, measured.peak,
+                )
+                if measured.frames == 0:
+                    logging.error(
+                        "FFmpeg produced no PCM audio for guild %s track %r",
+                        guild_id, track.title,
+                    )
+                elif measured.peak == 0:
+                    logging.error(
+                        "FFmpeg produced only silent PCM for guild %s track %r",
+                        guild_id, track.title,
+                    )
                 if error:
                     self.last_errors[guild_id] = str(error)[:500]
                     logging.error(
@@ -189,6 +238,12 @@ class GuildVoicePlayer:
             # Bothost containers may not include the system libopus package.
             ensure_opus_loaded()
             voice.play(source, after=after_play)
+            logging.info(
+                "Voice playback started guild=%s title=%r channel=%s "
+                "is_playing=%s",
+                guild_id, track.title, getattr(voice.channel, "id", None),
+                voice.is_playing(),
+            )
             self.last_errors.pop(guild_id, None)
         except Exception as exc:
             self.current.pop(guild_id, None)
