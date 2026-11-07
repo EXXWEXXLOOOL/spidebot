@@ -106,11 +106,15 @@ class SpideStreamResolverTests(unittest.TestCase):
             player.queues[123] = collections.deque([
                 QueuedTrack("Test", "https://cdn.example.test/audio.mp3")
             ])
-            with patch("spide_voice.discord.FFmpegPCMAudio", return_value=object()), patch(
+            with patch("spide_voice.imageio_ffmpeg.get_ffmpeg_exe", return_value="/bundled/ffmpeg") as get_ffmpeg, patch(
+                "spide_voice.discord.FFmpegPCMAudio", return_value=object()
+            ) as ffmpeg_audio, patch(
                 "spide_voice.discord.PCMVolumeTransformer", return_value=object()
             ):
                 with self.assertRaisesRegex(RuntimeError, "FFmpeg не смог запустить"):
                     await player._start_next(123, raise_on_error=True)
+                get_ffmpeg.assert_called_once_with()
+                self.assertEqual(ffmpeg_audio.call_args.kwargs["executable"], "/bundled/ffmpeg")
             self.assertIn("ffmpeg executable not found", player.last_errors[123])
             FakeBot.loop.close()
 
