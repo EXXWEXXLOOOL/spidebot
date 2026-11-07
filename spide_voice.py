@@ -10,11 +10,30 @@ import asyncio
 import collections
 import logging
 import urllib.parse
+from importlib.resources import files
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
 
 import discord
 import imageio_ffmpeg
+
+
+def ensure_opus_loaded():
+    """Load the bundled libopus when the host has no system Opus library."""
+    if discord.opus.is_loaded():
+        return
+
+    native_dir = Path(str(files("opuslib_next").joinpath("_native")))
+    candidates = sorted(native_dir.glob("libopus*.so*"))
+    candidates += sorted(native_dir.glob("libopus*.dylib"))
+    candidates += sorted(native_dir.glob("opus*.dll"))
+    if not candidates:
+        raise RuntimeError(
+            f"В пакете opuslib-next-bundled не найдена библиотека Opus: {native_dir}"
+        )
+
+    discord.opus.load_opus(str(candidates[0]))
 
 
 @dataclass
@@ -167,6 +186,8 @@ class GuildVoicePlayer:
                     )
                 asyncio.run_coroutine_threadsafe(self._start_next(guild_id), loop)
 
+            # Bothost containers may not include the system libopus package.
+            ensure_opus_loaded()
             voice.play(source, after=after_play)
             self.last_errors.pop(guild_id, None)
         except Exception as exc:
