@@ -108,6 +108,7 @@ class GuildVoicePlayer:
         self.current = {}
         self.volumes = collections.defaultdict(lambda: 0.5)
         self._locks = collections.defaultdict(asyncio.Lock)
+        self.last_errors = {}
 
     async def enqueue(self, guild, channel, track: QueuedTrack):
         if guild is None:
@@ -124,10 +125,11 @@ class GuildVoicePlayer:
             queue = self.queues.setdefault(guild.id, collections.deque())
             queue.append(track)
             if not voice.is_playing() and not voice.is_paused():
-                await self._start_next(guild.id, voice)
+                # Do not report a successful enqueue if FFmpeg cannot even start.
+                await self._start_next(guild.id, voice, raise_on_error=True)
             return (1 if guild.id in self.current else 0) + len(queue)
 
-    async def _start_next(self, guild_id, voice=None):
+    async def _start_next(self, guild_id, voice=None, *, raise_on_error=False):
         guild = self.bot.get_guild(guild_id)
         if guild is None:
             return
@@ -155,9 +157,18 @@ class GuildVoicePlayer:
                 asyncio.run_coroutine_threadsafe(self._start_next(guild_id), loop)
 
             voice.play(source, after=after_play)
-        except Exception:
-            logging.exception("Could not start Spide stream in guild %s", guild_id)
+            self.last_errors.pop(guild_id, None)
+        except Exception as exc:
             self.current.pop(guild_id, None)
+            self.last_errors[guild_id] = str(exc)[:500]
+            logging.exception("Could not start Spide stream in guild %s", guild_id)
+            if raise_on_error:
+                raise RuntimeError(
+                    "FFmpeg не смог запустить аудиопоток. "
+                    "Проверь, что FFmpeg установлен, доступен в PATH, "
+                    "а ссылка Spide действительно отдаёт аудио. "
+                    f"Подробность: {str(exc)[:300]}"
+                ) from exc
             await self._start_next(guild_id, voice)
 
     async def skip(self, guild):
@@ -171,6 +182,7 @@ class GuildVoicePlayer:
         voice = guild.voice_client
         self.queues[guild.id] = collections.deque()
         self.current.pop(guild.id, None)
+        self.last_errors.pop(guild.id, None)
         if voice:
             if voice.is_playing() or voice.is_paused():
                 voice.stop()
@@ -187,6 +199,9 @@ class GuildVoicePlayer:
             lines.extend(f"{i}. {item.title[:140]}" for i, item in enumerate(queue[:10], 1))
         if len(queue) > 10:
             lines.append(f"…и ещё {len(queue) - 10}")
+        last_error = self.last_errors.get(guild_id)
+        if last_error:
+            lines.append(f"⚠️ Последняя ошибка запуска: {last_error[:250]}")
         return "\n".join(lines) or "Очередь пуста."
 
     def set_volume(self, guild, volume):
