@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import discord
+import imageio_ffmpeg
 
 
 @dataclass
@@ -143,8 +144,12 @@ class GuildVoicePlayer:
         track = queue.popleft()
         self.current[guild_id] = track
         try:
+            # imageio-ffmpeg ships a standalone FFmpeg binary inside the
+            # Python environment, so this also works on hosts without apt/sudo.
+            ffmpeg_executable = imageio_ffmpeg.get_ffmpeg_exe()
             audio = discord.FFmpegPCMAudio(
                 track.stream_url,
+                executable=ffmpeg_executable,
                 before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
                 options="-vn",
             )
