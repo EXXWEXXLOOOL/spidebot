@@ -2249,6 +2249,14 @@ def _build_commands_embed(author):
         inline=False,
     )
     embed.add_field(
+        name="🎧 Голосовой плеер",
+        value=(
+            "`/play` — добавить трек Spide в выбранный голосовой канал. "
+            "`/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/volume` — управление воспроизведением."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="🏆 Топ слушателей",
         value="`/top` или `/топ` — опубликовать актуальный топ слушателей в этом канале.",
         inline=False,
