@@ -61,7 +61,9 @@ class AudioDiagnosticsSource(discord.AudioSource):
         return False
 
     def cleanup(self):
-        self.source.cleanup()
+        cleanup = getattr(self.source, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
 
 
 @dataclass
