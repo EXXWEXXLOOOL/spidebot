@@ -87,7 +87,7 @@ class SpideStreamResolverTests(unittest.TestCase):
     def test_audio_diagnostics_detects_non_silent_pcm(self):
         class FakeSource:
             def __init__(self):
-                self.chunks = [b"\\x00\\x00\\x10\\x00", b"",]
+                self.chunks = [bytes([0, 0, 16, 0]), b"",]
 
             def read(self):
                 return self.chunks.pop(0)
@@ -96,7 +96,7 @@ class SpideStreamResolverTests(unittest.TestCase):
                 pass
 
         measured = AudioDiagnosticsSource(FakeSource())
-        self.assertEqual(measured.read(), b"\\x00\\x00\\x10\\x00")
+        self.assertEqual(measured.read(), bytes([0, 0, 16, 0]))
         self.assertEqual(measured.read(), b"")
         self.assertEqual(measured.frames, 1)
         self.assertEqual(measured.nonzero_frames, 1)
