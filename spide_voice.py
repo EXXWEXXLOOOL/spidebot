@@ -66,6 +66,64 @@ class AudioDiagnosticsSource(discord.AudioSource):
             cleanup()
 
 
+def install_voice_transport_diagnostics(voice, guild_id):
+    """Observe actual UDP packet writes, including errors discord.py normally hides."""
+    connection = getattr(voice, "_connection", None)
+    if connection is None:
+        logging.warning("Voice transport diagnostics unavailable guild=%s: no connection state", guild_id)
+        return None
+
+    state = getattr(voice, "_spide_transport_stats", None)
+    if state is not None:
+        state["track_packets"] = 0
+        state["track_bytes"] = 0
+        state["track_errors"] = 0
+        state["guild_id"] = guild_id
+        return state
+
+    original_send_packet = connection.send_packet
+    state = {
+        "packets": 0,
+        "bytes": 0,
+        "errors": 0,
+        "track_packets": 0,
+        "track_bytes": 0,
+        "track_errors": 0,
+        "guild_id": guild_id,
+    }
+
+    def observed_send_packet(packet):
+        try:
+            result = original_send_packet(packet)
+        except OSError:
+            state["errors"] += 1
+            state["track_errors"] += 1
+            logging.exception(
+                "VOICE UDP SEND FAILED guild=%s packets_ok=%s packet_bytes=%s",
+                state["guild_id"], state["track_packets"], len(packet),
+            )
+            raise
+        state["packets"] += 1
+        state["bytes"] += len(packet)
+        state["track_packets"] += 1
+        state["track_bytes"] += len(packet)
+        if state["track_packets"] == 1:
+            logging.info(
+                "VOICE UDP FIRST PACKET guild=%s packet_bytes=%s",
+                state["guild_id"], len(packet),
+            )
+        elif state["track_packets"] % 1000 == 0:
+            logging.info(
+                "VOICE UDP PROGRESS guild=%s packets=%s bytes=%s",
+                state["guild_id"], state["track_packets"], state["track_bytes"],
+            )
+        return result
+
+    connection.send_packet = observed_send_packet
+    voice._spide_transport_stats = state
+    return state
+
+
 @dataclass
 class QueuedTrack:
     title: str
@@ -127,8 +185,6 @@ def resolve_spide_stream(track: dict, credential: str, spide_get: Callable,
         path = f"/{provider}/tracks/{urllib.parse.quote(track_id, safe='')}/stream"
         url = api_base.rstrip("/") + path
     else:
-        # The Android client exposes /soundcloud/stream (unlike the
-        # provider-specific /tracks/{id}/stream routes).
         url = api_base.rstrip("/") + "/soundcloud/stream?" + urllib.parse.urlencode(
             {"trackId": track_id}
         )
@@ -175,7 +231,6 @@ class GuildVoicePlayer:
             queue = self.queues.setdefault(guild.id, collections.deque())
             queue.append(track)
             if not voice.is_playing() and not voice.is_paused():
-                # Do not report a successful enqueue if FFmpeg cannot even start.
                 await self._start_next(guild.id, voice, raise_on_error=True)
             return (1 if guild.id in self.current else 0) + len(queue)
 
@@ -193,8 +248,6 @@ class GuildVoicePlayer:
         track = queue.popleft()
         self.current[guild_id] = track
         try:
-            # imageio-ffmpeg ships a standalone FFmpeg binary inside the
-            # Python environment, so this also works on hosts without apt/sudo.
             ffmpeg_executable = imageio_ffmpeg.get_ffmpeg_exe()
             audio = discord.FFmpegPCMAudio(
                 track.stream_url,
@@ -207,6 +260,16 @@ class GuildVoicePlayer:
                 measured, volume=self.volumes[guild_id]
             )
             loop = self.bot.loop
+            transport = install_voice_transport_diagnostics(voice, guild_id)
+            connection = getattr(voice, "_connection", None)
+            logging.info(
+                "VOICE TRANSPORT STATE guild=%s discord_py=%s opus_loaded=%s "
+                "mode=%s dave_session=%s can_encrypt=%s",
+                guild_id, getattr(discord, "__version__", "unknown"),
+                discord.opus.is_loaded(), getattr(voice, "mode", None),
+                bool(getattr(connection, "dave_session", None)),
+                getattr(connection, "can_encrypt", None),
+            )
 
             def after_play(error):
                 logging.info(
@@ -215,32 +278,26 @@ class GuildVoicePlayer:
                     guild_id, track.title, measured.frames,
                     measured.nonzero_frames, measured.peak,
                 )
-                if measured.frames == 0:
-                    logging.error(
-                        "FFmpeg produced no PCM audio for guild %s track %r",
-                        guild_id, track.title,
-                    )
-                elif measured.peak == 0:
-                    logging.error(
-                        "FFmpeg produced only silent PCM for guild %s track %r",
-                        guild_id, track.title,
+                if transport is not None:
+                    logging.info(
+                        "VOICE UDP SUMMARY guild=%s title=%r packets_ok=%s "
+                        "bytes_ok=%s socket_errors=%s",
+                        guild_id, track.title, transport["track_packets"],
+                        transport["track_bytes"], transport["track_errors"],
                     )
                 if error:
                     self.last_errors[guild_id] = str(error)[:500]
                     logging.error(
                         "Voice playback failed in guild %s: %s",
-                        guild_id,
-                        error,
+                        guild_id, error,
                         exc_info=(type(error), error, error.__traceback__),
                     )
                 asyncio.run_coroutine_threadsafe(self._start_next(guild_id), loop)
 
-            # Bothost containers may not include the system libopus package.
             ensure_opus_loaded()
             voice.play(source, after=after_play)
             logging.info(
-                "Voice playback started guild=%s title=%r channel=%s "
-                "is_playing=%s",
+                "Voice playback started guild=%s title=%r channel=%s is_playing=%s",
                 guild_id, track.title, getattr(voice.channel, "id", None),
                 voice.is_playing(),
             )
@@ -251,9 +308,7 @@ class GuildVoicePlayer:
             logging.exception("Could not start Spide stream in guild %s", guild_id)
             if raise_on_error:
                 raise RuntimeError(
-                    "FFmpeg не смог запустить аудиопоток. "
-                    "Проверь, что FFmpeg установлен, доступен в PATH, "
-                    "а ссылка Spide действительно отдаёт аудио. "
+                    "Не удалось запустить аудиопоток. "
                     f"Подробность: {str(exc)[:300]}"
                 ) from exc
             await self._start_next(guild_id, voice)
