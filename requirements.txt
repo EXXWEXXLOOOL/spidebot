@@ -5,3 +5,4 @@ lxml
 tzdata
 Flask>=3.0,<4
 Werkzeug>=3.0,<4
+imageio-ffmpeg>=0.5.1,<1.0
