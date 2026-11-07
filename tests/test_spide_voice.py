@@ -1,7 +1,10 @@
+import asyncio
+import collections
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlparse, parse_qs
 
-from spide_voice import resolve_spide_stream
+from spide_voice import GuildVoicePlayer, QueuedTrack, resolve_spide_stream
 
 
 class FakeResponse:
@@ -79,6 +82,39 @@ class SpideStreamResolverTests(unittest.TestCase):
                 "https://api.spidemusic.com/v1",
             )
 
+
+    def test_player_reports_ffmpeg_startup_failure(self):
+        class FakeVoice:
+            def is_connected(self):
+                return True
+
+            def play(self, source, after=None):
+                raise RuntimeError("ffmpeg executable not found")
+
+        class FakeGuild:
+            id = 123
+            voice_client = FakeVoice()
+
+        class FakeBot:
+            loop = asyncio.new_event_loop()
+
+            def get_guild(self, guild_id):
+                return FakeGuild()
+
+        async def run_test():
+            player = GuildVoicePlayer(FakeBot())
+            player.queues[123] = collections.deque([
+                QueuedTrack("Test", "https://cdn.example.test/audio.mp3")
+            ])
+            with patch("spide_voice.discord.FFmpegPCMAudio", return_value=object()), patch(
+                "spide_voice.discord.PCMVolumeTransformer", return_value=object()
+            ):
+                with self.assertRaisesRegex(RuntimeError, "FFmpeg не смог запустить"):
+                    await player._start_next(123, raise_on_error=True)
+            self.assertIn("ffmpeg executable not found", player.last_errors[123])
+            FakeBot.loop.close()
+
+        asyncio.run(run_test())
 
 if __name__ == "__main__":
     unittest.main()
