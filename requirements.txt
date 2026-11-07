@@ -1,4 +1,4 @@
-discord.py
+discord.py[voice]
 curl_cffi
 beautifulsoup4
 lxml

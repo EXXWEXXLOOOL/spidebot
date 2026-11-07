@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import secrets
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from dashboard.admin_panel import register_admin_panel
+from spide_voice import GuildVoicePlayer, QueuedTrack, resolve_spide_stream
 
 # ==============================
 # LOGGING & MEMORY BUFFER
@@ -678,6 +679,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True # Обязательно для приветствий и ролей
 bot = commands.Bot(command_prefix="!", intents=intents)
+voice_player = GuildVoicePlayer(bot)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -2135,8 +2137,8 @@ def _build_role_select_embed():
     return discord.Embed(
         title="🎭 Выбор платформы",
         description=(
-            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\\n\\n"
-            "🤖 **Android**\\n🌐 **Web**\\n💻 **Desktop**\\n🎨 **Своя роль** — создать одну личную роль с выбранным цветом"
+            "Нажмите на кнопку ниже, чтобы получить роль своей платформы.\n\n"
+            "🤖 **Android**\n🌐 **Web**\n💻 **Desktop**\n🎨 **Своя роль** — создать одну личную роль с выбранным цветом"
         ),
         color=ORANGE,
     )
@@ -2247,6 +2249,14 @@ def _build_commands_embed(author):
         inline=False,
     )
     embed.add_field(
+        name="🎧 Голосовой плеер",
+        value=(
+            "`/play` — добавить трек Spide в выбранный голосовой канал. "
+            "`/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/volume` — управление воспроизведением."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="🏆 Топ слушателей",
         value="`/top` или `/топ` — опубликовать актуальный топ слушателей в этом канале.",
         inline=False,
@@ -2302,6 +2312,139 @@ async def _handle_slash_search(interaction: discord.Interaction, query: str):
 @app_commands.describe(query="Название трека или исполнителя")
 async def slash_search(interaction: discord.Interaction, query: str):
     await _handle_slash_search(interaction, query)
+
+
+
+def _parse_spide_play_input(value):
+    """Return either a direct provider track reference or a search query."""
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("Укажи ссылку Spide или название трека.")
+    if not re.match(r"^https?://", raw, flags=re.IGNORECASE):
+        return {"query": raw}
+
+    parsed = urllib.parse.urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if host not in {"spidemusic.com", "www.spidemusic.com", "web.spidemusic.com"}:
+        raise ValueError("Для /play нужна ссылка Spide или обычный поисковый запрос.")
+    query_values = urllib.parse.parse_qs(parsed.query)
+    query = (query_values.get("q") or query_values.get("query") or [""])[0].strip()
+    if query:
+        return {"query": query}
+
+    parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
+    for provider in ("spotify", "youtube", "soundcloud"):
+        if provider in parts:
+            index = parts.index(provider)
+            candidate = parts[index + 2] if len(parts) > index + 2 and parts[index + 1] in {"tracks", "track"} else ""
+            if candidate:
+                return {"track": {"id": candidate, "source": provider, "title": candidate}}
+    for marker in ("track", "tracks"):
+        if marker in parts:
+            index = parts.index(marker)
+            if len(parts) > index + 1:
+                return {"track": {"id": parts[index + 1], "source": "spotify", "title": parts[index + 1]}}
+    raise ValueError("Не удалось распознать трек в ссылке. Отправь ссылку вида Spide с ID трека или название композиции.")
+
+
+def _find_spide_track(value, credential):
+    request = _parse_spide_play_input(value)
+    if request.get("track"):
+        return request["track"]
+    data = search_spide(request["query"], credential)
+    tracks = data.get("tracks", []) if isinstance(data, dict) else []
+    if not tracks:
+        raise ValueError("Spide не нашёл трек по этому запросу.")
+    return tracks[0]
+
+
+@bot.tree.command(name="play", description="Воспроизвести трек Spide в выбранном голосовом канале")
+@app_commands.guild_only()
+@app_commands.describe(channel="Голосовой канал для воспроизведения", track="Ссылка Spide или название трека")
+async def slash_play(interaction: discord.Interaction, channel: discord.VoiceChannel, track: str):
+    if not await _slash_permission_allowed(interaction, "play"):
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    global app_config
+    app_config = load_config()
+    credential = str(app_config.get("SPIDE_COOKIE") or "").strip()
+    if not credential:
+        await interaction.followup.send("❌ Не настроен SPIDE_COOKIE / access_token в конфигурации бота.", ephemeral=True)
+        return
+    try:
+        selected_track = await asyncio.to_thread(_find_spide_track, track, credential)
+        stream_url = await asyncio.to_thread(
+            resolve_spide_stream, selected_track, credential, _spide_get, SPIDE_API_BASE
+        )
+        title = str(selected_track.get("title") or "Трек Spide")
+        artists = format_artists(selected_track.get("artists", []))
+        position = await voice_player.enqueue(
+            interaction.guild,
+            channel,
+            QueuedTrack(title=f"{title} — {artists}", stream_url=stream_url),
+        )
+        await interaction.followup.send(
+            f"🎶 Добавлено в очередь канала **{channel.name}**: **{title} — {artists}**\n"
+            f"Позиция: **{position}**.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        logging.exception("Ошибка /play Spide voice")
+        await interaction.followup.send(f"❌ {str(exc)[:700]}", ephemeral=True)
+
+
+@bot.tree.command(name="pause", description="Приостановить воспроизведение")
+@app_commands.guild_only()
+async def slash_pause(interaction: discord.Interaction):
+    voice = interaction.guild.voice_client
+    if voice and voice.is_playing():
+        voice.pause()
+        await interaction.response.send_message("⏸️ Воспроизведение приостановлено.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Сейчас ничего не воспроизводится.", ephemeral=True)
+
+
+@bot.tree.command(name="resume", description="Продолжить воспроизведение")
+@app_commands.guild_only()
+async def slash_resume(interaction: discord.Interaction):
+    voice = interaction.guild.voice_client
+    if voice and voice.is_paused():
+        voice.resume()
+        await interaction.response.send_message("▶️ Воспроизведение продолжено.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Нет приостановленного трека.", ephemeral=True)
+
+
+@bot.tree.command(name="skip", description="Пропустить текущий трек")
+@app_commands.guild_only()
+async def slash_skip(interaction: discord.Interaction):
+    if await voice_player.skip(interaction.guild):
+        await interaction.response.send_message("⏭️ Трек пропущен.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Сейчас нечего пропускать.", ephemeral=True)
+
+
+@bot.tree.command(name="stop", description="Остановить музыку и отключить бота")
+@app_commands.guild_only()
+async def slash_stop(interaction: discord.Interaction):
+    await voice_player.stop(interaction.guild)
+    await interaction.response.send_message("⏹️ Воспроизведение остановлено, очередь очищена.", ephemeral=True)
+
+
+@bot.tree.command(name="queue", description="Показать очередь воспроизведения")
+@app_commands.guild_only()
+async def slash_queue(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        voice_player.queue_text(interaction.guild.id), ephemeral=True
+    )
+
+
+@bot.tree.command(name="volume", description="Установить громкость от 0 до 100")
+@app_commands.guild_only()
+@app_commands.describe(level="Громкость в процентах")
+async def slash_volume(interaction: discord.Interaction, level: app_commands.Range[int, 0, 100]):
+    voice_player.set_volume(interaction.guild, level)
+    await interaction.response.send_message(f"🔊 Громкость: **{level}%**.", ephemeral=True)
 
 
 @bot.tree.command(name="top", description="Показать топ слушателей Spide")
